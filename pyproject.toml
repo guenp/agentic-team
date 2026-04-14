@@ -12,6 +12,11 @@ dependencies = [
 team = "agentic_team.cli:app"
 agentic-team = "agentic_team.cli:app"
 
+[dependency-groups]
+docs = [
+    "zensical>=0.0.1",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
