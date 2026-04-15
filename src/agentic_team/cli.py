@@ -351,8 +351,7 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
         raise click.ClickException(f"tmux session {team.tmux_session!r} not found.")
 
     for i, matched in enumerate(resolved):
-        if len(resolved) > 1:
-            # Find worker status for the header
+        if True:
             w = next((w for w in workers if w.name == matched), None)
             st = w.status if w else "?"
             task = w.task if w else ""
