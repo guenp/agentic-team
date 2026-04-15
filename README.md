@@ -96,6 +96,115 @@ team attach
 
 The lead agent receives a generated team-lead prompt when the provider supports system-prompt injection. Today that means Claude; Codex and Gemini leads run with provider-specific CLI flags only.
 
+## How to use it: talk to the lead
+
+The primary workflow is **conversational delegation** — you talk to the lead agent like a project manager, and it breaks down work, spawns workers, monitors progress, and synthesizes results.
+
+### Starting a session
+
+From your terminal:
+
+```bash
+team init myproject --provider claude --working-dir ~/repos/myproject
+```
+
+Or from inside Claude Code, use the `/team` skill:
+
+```
+/team start a new team for ~/repos/myproject
+```
+
+Either way you get a lead agent running in a tmux session, ready to take instructions.
+
+### Delegating work with natural language
+
+Once the lead is running, send it tasks in plain English. The lead decides how many workers to spawn, what each one does, and coordinates the results.
+
+```bash
+# One-liner delegation
+team "review all open PRs, fix any issues, and merge them"
+
+# Or attach and chat interactively
+team attach
+```
+
+From Claude Code:
+
+```
+/team review all open PRs and merge the ones that are ready
+```
+
+The lead will:
+
+1. **Analyze** the request and break it into discrete tasks
+2. **Spawn workers** — one per PR, one per bug fix, etc.
+3. **Monitor** each worker's progress via `team status`
+4. **Read logs** to check worker output when they finish
+5. **Synthesize** results and report back to you
+
+### Example: reviewing and merging PRs
+
+Here is a realistic interaction showing the conversational flow:
+
+```
+You:    /team review all 4 open PRs, fix any issues, and merge them in order
+
+Lead:   I'll spawn 4 workers to review the PRs in parallel.
+        [spawns worker: review-pr-1]
+        [spawns worker: review-pr-2]
+        [spawns worker: review-pr-3]
+        [spawns worker: review-pr-4]
+
+Lead:   All 4 reviews are done. PRs #1 and #3 are clean.
+        PR #2 has a failing test — spawning a worker to fix it.
+        PR #4 has a merge conflict — spawning a worker to resolve it.
+        [spawns worker: fix-pr-2]
+        [spawns worker: fix-pr-4]
+
+Lead:   Fixes are in. Merging in order: #1, #2, #3, #4.
+        All 4 PRs merged successfully. Here's the summary:
+        - PR #1: Added auth middleware — merged cleanly
+        - PR #2: Fixed login bug (test fix applied) — merged
+        - PR #3: Updated docs — merged cleanly
+        - PR #4: Refactored config (conflict resolved) — merged
+```
+
+You stay in control — you can redirect the lead at any time:
+
+```
+You:    skip PR #4 for now, just merge the first three
+You:    also tag a release after merging
+You:    what's the status on the test fix for PR #2?
+```
+
+### Example: multi-step release workflow
+
+```
+You:    /team run the full release process — review PRs, merge them,
+        bump the version, update the changelog, and tag a release
+
+Lead:   Starting with PR review. I see 3 open PRs.
+        [spawns 3 review workers]
+        ...
+        All PRs reviewed and merged.
+        Now bumping version to v0.3.0 and updating CHANGELOG.md.
+        [spawns worker: bump-version]
+        ...
+        Version bumped. Creating git tag v0.3.0 and pushing.
+        Release complete. Summary: ...
+```
+
+### Checking on progress
+
+While the lead is working, you can check status from another terminal:
+
+```bash
+team status          # table of all workers and their states
+team logs            # recent output from all workers
+team standup         # ask the lead for a markdown summary
+team attach --multi  # tiled tmux view of all workers
+```
+
 ## Command quick reference
 
 Global options:
@@ -235,6 +344,7 @@ TEAM_NAME=other-team team logs lead
 - [docs/examples.md](docs/examples.md)
 - [docs/operations.md](docs/operations.md)
 - [docs/architecture.md](docs/architecture.md)
+- [demo/lead-workflow.md](demo/lead-workflow.md) — full walkthrough of the interactive lead workflow
 
 ## License
 
