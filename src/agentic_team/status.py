@@ -55,7 +55,10 @@ def get_team_status(config: TeamConfig) -> dict:
                 or worker.tmux_window in multi_joined
             )
             if in_windows and not tmux.is_pane_dead(worker.tmux_window, state_dir=state_dir):
-                if not _is_interactive_idle(worker, tmux, state_dir):
+                if _is_waiting_for_input(worker, tmux, state_dir):
+                    worker.status = "waiting"
+                    updated = True
+                elif not _is_interactive_idle(worker, tmux, state_dir):
                     worker.status = "running"
                     updated = True
             continue
@@ -311,6 +314,10 @@ def _is_interactive_idle(
     elif worker.provider == "codex":
         # If "Working (" is visible, the agent is actively processing.
         if "Working (" in output:
+            return False
+        # Don't report idle if the agent is waiting for user confirmation —
+        # the confirmation menu contains "›" which looks like the idle prompt.
+        if "Press enter to confirm" in output or "Would you like to run" in output:
             return False
         # "Worked for" summary means task completed.
         if "Worked for" in output:
