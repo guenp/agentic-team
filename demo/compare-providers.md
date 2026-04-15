@@ -1,5 +1,5 @@
-# Provider Comparison — Security audit
+# Provider Comparison — Quick demo
 
 ## .
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: claude, name: claude-audit)
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: codex, name: codex-audit)
+- [ ] List all Python files in src/ and count total lines of code. (provider: claude, name: claude-loc)
+- [ ] List all Python files in src/ and count total lines of code. (provider: codex, name: codex-loc)

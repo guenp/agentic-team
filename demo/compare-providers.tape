@@ -1,4 +1,4 @@
-# Multi-provider comparison demo
+# Quick multi-provider comparison demo
 # Run with: vhs demo/compare-providers.tape
 
 Output demo/compare-providers.gif
@@ -42,49 +42,27 @@ Sleep 3
 
 Type "team run demo/compare-providers.md"
 Enter
-Sleep 12
+Sleep 8
 
-# ── Check status — all three providers running ────────────────
+# ── Check status ──────────────────────────────────────────────
 
 Type "team status"
 Enter
 Sleep 3
 
-# ── Attach to the tmux session ────────────────────────────────
+# ── Attach and browse workers ─────────────────────────────────
 
 Type "team attach"
 Enter
 Sleep 3
 
-# ── Browse the Claude worker ──────────────────────────────────
-
 Ctrl+B
 Type n
 Sleep 5
 
-# ── Browse the Codex worker ───────────────────────────────────
-
 Ctrl+B
 Type n
 Sleep 5
-
-# ── Browse the Gemini worker ──────────────────────────────────
-
-Ctrl+B
-Type n
-Sleep 5
-
-# ── Back to lead ──────────────────────────────────────────────
-
-Ctrl+B
-Type p
-Sleep 1
-Ctrl+B
-Type p
-Sleep 1
-Ctrl+B
-Type p
-Sleep 2
 
 # ── Detach ────────────────────────────────────────────────────
 
@@ -97,28 +75,6 @@ Sleep 2
 Type "team status"
 Enter
 Sleep 3
-
-# ── Compare logs from all three providers ─────────────────────
-
-Type "team logs claude-audit"
-Enter
-Sleep 4
-
-Type "team logs codex-audit"
-Enter
-Sleep 4
-
-Type "team logs gemini-audit"
-Enter
-Sleep 4
-
-# ── Ask the lead to compare ───────────────────────────────────
-
-Set TypingSpeed 20ms
-Type "team \"Review the output from all three workers with 'team logs'. Compare the findings and write a consolidated report.\""
-Enter
-Sleep 3
-Set TypingSpeed 40ms
 
 # ── Clean up ──────────────────────────────────────────────────
 
