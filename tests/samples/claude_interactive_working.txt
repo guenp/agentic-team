@@ -1,0 +1,17 @@
+╭──────────────────────────────────────────╮
+│ ✻ Claude Code                            │
+│                                          │
+│   /help for help                         │
+╰──────────────────────────────────────────╯
+
+ ❯ Fix the login bug
+
+⏺ I'll fix the login bug in src/auth.py.
+
+  Let me look at the current code first...
+
+⎿ Read src/auth.py
+
+⏺ Now I'll apply the fix to the session validation logic...
+
+  esc to interrupt
