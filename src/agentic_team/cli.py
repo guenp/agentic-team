@@ -372,7 +372,23 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
                     click.echo(line)
         else:
             output = tmux.capture_pane(matched, lines=tail).rstrip("\n")
-            click.echo(output)
+            # Strip Claude Code UI chrome (status bar, prompt lines, rules)
+            cleaned = []
+            for line in output.splitlines():
+                stripped = line.strip()
+                # Skip horizontal rules (all ─), bare prompts, and status bar lines
+                if not stripped:
+                    continue
+                if all(c == "─" for c in stripped):
+                    continue
+                if stripped == "❯" or stripped == "\u276f":
+                    continue
+                if "esc to interrupt" in stripped:
+                    continue
+                if stripped.startswith("⏵⏵") or stripped.startswith("\u23f5\u23f5"):
+                    continue
+                cleaned.append(line)
+            click.echo("\n".join(cleaned))
 
         if i < len(resolved) - 1:
             click.echo()
