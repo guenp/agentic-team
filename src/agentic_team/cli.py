@@ -381,6 +381,55 @@ def status_cmd(worker_name: str | None, verbose: bool) -> None:
     _status_live(team, tmux, state_dir, st, targets)
 
 
+# ── team wait ──────────────────────────────────────────────────
+
+
+@app.command()
+@click.option("--timeout", "-t", default=600, help="Max seconds to wait (default 600).")
+@click.option("--interval", "-i", default=15, help="Seconds between polls (default 15).")
+def wait(timeout: int, interval: int) -> None:
+    """Block until all running workers are done.
+
+    Shows the status table initially, then reprints it only when a
+    worker's status changes. Uses one tool call in the lead's context
+    instead of repeated status checks.
+    """
+    import time
+
+    team = _get_team()
+    start = time.time()
+
+    # Track status per worker to detect changes
+    prev_statuses: dict[str, str] = {}
+
+    while True:
+        st = status.get_team_status(team)
+        workers = st["workers"]
+        running = [w for w in workers if w["status"] == "running"]
+        cur_statuses = {w["name"]: w["status"] for w in workers}
+
+        # Print table on first poll or when any worker's status changed
+        if cur_statuses != prev_statuses:
+            elapsed = int(time.time() - start)
+            click.echo(f"\n--- {elapsed}s elapsed ---")
+            status.format_status(st)
+            prev_statuses = cur_statuses
+
+        if not running:
+            break
+
+        elapsed = int(time.time() - start)
+        if elapsed >= timeout:
+            click.echo(f"\nTimed out after {timeout}s. {len(running)} worker(s) still running.")
+            return
+
+        time.sleep(interval)
+
+    elapsed = int(time.time() - start)
+    done = [w for w in workers if w["status"] == "done"]
+    click.echo(f"\nAll {len(done)} worker(s) done in {elapsed}s.")
+
+
 # ── team standup ────────────────────────────────────────────────
 
 

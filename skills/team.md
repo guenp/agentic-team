@@ -7,20 +7,21 @@ description: Manage your team of worker agents. Use when the user says /team fol
 
 You are the team lead running inside a tmux session. You manage worker agents via the `team` CLI. Workers run in parallel in separate tmux windows.
 
-When the user invokes `/team <command>`, execute the corresponding `team` CLI command via Bash immediately — don't ask for confirmation. After running the command, report the result and take any follow-up action that makes sense (e.g. after `team run`, monitor with `team status`).
+When the user invokes `/team <command>`, execute the corresponding `team` CLI command via Bash immediately — don't ask for confirmation. After running the command, report the result and take any follow-up action that makes sense (e.g. after `team run`, use `team wait` to block until done).
 
 ## Command mapping
 
 | User says | You run |
 |-----------|---------|
-| `/team run <file>` | `team run <file>`, then poll `team status` until workers finish |
+| `/team run <file>` | `team run <file>`, then `team wait`, then review logs |
 | `/team status` | `team status` |
 | `/team logs <name>` | `team logs <name>` |
 | `/team spawn --task "..." --name <n>` | `team spawn-worker --task "..." --name <n>` |
 | `/team send <name> "msg"` | `team send-to-worker <name> "msg"` |
 | `/team resume <name> "msg"` | `team resume <name> "msg"` |
 | `/team stop <name>` | `team stop-worker <name>` |
-| `/team clear` | `team clear` (remove done workers from status list) |
+| `/team clear` | `team clear` (remove done workers and close their tmux windows) |
+| `/team wait` | `team wait` (block until all workers finish) |
 | `/team standup` | `team status`, then `team logs` for each worker, then summarize |
 
 If the user gives a freeform request (e.g. `/team fix all the TODOs`), break it down into tasks and spawn workers yourself.
@@ -30,19 +31,20 @@ If the user gives a freeform request (e.g. `/team fix all the TODOs`), break it 
 When the user says `/team run <file>`:
 
 1. Run `team run <file>` to spawn workers
-2. Poll `team status` every 30-60 seconds until all workers are done
+2. Run `team wait` to block until all workers are done (this polls internally — no token waste)
 3. Run `team logs <name>` for each completed worker to review output
 4. Summarize the results to the user
 
 ```bash
 team run path/to/tasks.md
-# wait...
-team status
+team wait
 # when done:
 team logs worker-1
 team logs worker-2
 # summarize
 ```
+
+**IMPORTANT**: Always use `team wait` instead of polling `team status` in a loop. `team wait` blocks internally and uses a single tool call. Polling `team status` repeatedly wastes tokens.
 
 ## Spawning workers manually
 
@@ -51,6 +53,8 @@ team spawn-worker --task "Clear, self-contained task description" --name short-n
 ```
 
 Always include `--name` with a short kebab-case name (e.g. `fix-auth`, `add-tests`).
+
+After spawning, use `team wait` to block until workers finish.
 
 Options:
 - `--mode oneshot` — fire-and-forget (default: `interactive`, stays alive for follow-ups)
@@ -70,12 +74,14 @@ Workers have no context about the larger goal. Include:
 ## Monitoring and interacting
 
 ```bash
-team status                              # status table
+team status                              # one-time status check
+team wait                                # block until all workers done
 team logs <name>                         # last 50 lines of output
 team logs <name> -n 100                  # more lines
 team send-to-worker <name> "message"     # follow-up to running worker
 team resume <name> "new task"            # resume a completed worker
 team stop-worker <name>                  # kill a worker
+team clear                               # remove done workers + close windows
 ```
 
 ## Task file format
@@ -94,8 +100,9 @@ Headings set the working directory. Use `.` for the current directory. Inline `(
 ## Rules
 
 - Execute commands immediately — don't ask the user to confirm
+- **NEVER poll `team status` in a loop** — use `team wait` instead
 - Do NOT spawn more than the team's max workers at once (check `team status` first)
 - Do NOT interact with tmux directly — use `team` commands only
 - Do NOT spawn nested teams or run `team init` — you are already the lead
 - Each worker should have ONE clear task — don't overload a single worker
-- After spawning workers, monitor with `team status` and report back when done
+- After spawning workers, use `team wait` then review logs and report back

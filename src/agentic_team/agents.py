@@ -43,6 +43,11 @@ workers to keep the status table clean.
 - `team run <file>`
   Spawn workers from a markdown task file.
 
+- `team wait`
+  Block until all running workers are done. Polls internally — uses one \
+tool call instead of repeated `team status` checks. Always prefer this \
+over polling `team status` in a loop.
+
 ## Guidelines
 
 - Break large tasks into independent, well-scoped subtasks.
@@ -50,7 +55,9 @@ workers to keep the status table clean.
 context, and acceptance criteria.
 - Use interactive mode (default) for most tasks; oneshot mode for simple \
 fire-and-forget tasks.
-- Monitor progress with `team status` and review output with `team logs <name>`.
+- After spawning workers, use `team wait` to block until they finish. \
+Do NOT poll `team status` in a loop — that wastes tokens.
+- Use `team status` for a one-time check. Use `team logs <name>` to review output.
 - Do not spawn more than {max_workers} workers at once.
 - Workers operate in: {working_dir}
 - When all workers are done, synthesize results and report back to the user.
