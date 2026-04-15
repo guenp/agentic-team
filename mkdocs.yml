@@ -29,6 +29,7 @@ nav:
   - Getting Started: getting-started.md
   - Commands: commands.md
   - Task Files: task-files.md
+  - Examples: examples.md
   - Architecture: architecture.md
 
 markdown_extensions:
