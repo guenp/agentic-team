@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import tomllib
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +18,10 @@ TEAMS_DIR = BASE_DIR / "teams"
 STATE_DIR = BASE_DIR / "state"
 LOGS_DIR = BASE_DIR / "logs"
 ACTIVE_LINK = BASE_DIR / "active"
+
+
+class StateFileError(RuntimeError):
+    """Raised when persistent team state cannot be read or written safely."""
 
 
 def ensure_dirs() -> None:
@@ -62,6 +68,8 @@ class WorkerState:
     source: str = "cli"  # "cli" | "file" | "lead"
     started_at: str = ""
     pid: int | None = None
+    last_error: str | None = None
+    exit_code: int | None = None
 
     def __post_init__(self) -> None:
         if not self.tmux_window:
@@ -78,12 +86,55 @@ def _strip_none(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
+def _atomic_write_bytes(path: Path, data: bytes, description: str) -> None:
+    """Write bytes atomically so readers never observe a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp.write(data)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(path)
+    except OSError as exc:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise StateFileError(
+            f"Could not write {description} at {path}: {exc}. "
+            f"Check permissions, free disk space, or remove the damaged file and retry."
+        ) from exc
+
+
+def _load_toml_file(path: Path, description: str) -> dict:
+    """Load TOML with actionable recovery guidance on parse or I/O failures."""
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise StateFileError(
+            f"Could not read {description} at {path}: {exc}. "
+            f"Check permissions or restore the file, then retry."
+        ) from exc
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise StateFileError(
+            f"Could not parse {description} at {path}: {exc}. "
+            f"Fix the TOML or remove the file so it can be recreated."
+        ) from exc
+
+
 def save_team(config: TeamConfig) -> Path:
     """Save team config to TOML. Returns the path."""
     ensure_dirs()
     path = TEAMS_DIR / f"{config.name}.toml"
     data = _strip_none(asdict(config))
-    path.write_bytes(tomli_w.dumps(data).encode())
+    _atomic_write_bytes(path, tomli_w.dumps(data).encode(), f"team config {config.name!r}")
     return path
 
 
@@ -92,7 +143,7 @@ def load_team(name: str) -> TeamConfig:
     path = TEAMS_DIR / f"{name}.toml"
     if not path.exists():
         raise FileNotFoundError(f"Team {name!r} not found at {path}")
-    data = tomllib.loads(path.read_text())
+    data = _load_toml_file(path, f"team config {name!r}")
     return TeamConfig(**data)
 
 
@@ -150,9 +201,8 @@ def _workers_path(team_name: str) -> Path:
 def save_workers(team_name: str, workers: list[WorkerState]) -> None:
     """Save worker state list to TOML."""
     path = _workers_path(team_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
     data = {"workers": [_strip_none(asdict(w)) for w in workers]}
-    path.write_bytes(tomli_w.dumps(data).encode())
+    _atomic_write_bytes(path, tomli_w.dumps(data).encode(), f"worker state for team {team_name!r}")
 
 
 def load_workers(team_name: str) -> list[WorkerState]:
@@ -160,7 +210,7 @@ def load_workers(team_name: str) -> list[WorkerState]:
     path = _workers_path(team_name)
     if not path.exists():
         return []
-    data = tomllib.loads(path.read_text())
+    data = _load_toml_file(path, f"worker state for team {team_name!r}")
     return [WorkerState(**w) for w in data.get("workers", [])]
 
 

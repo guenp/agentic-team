@@ -4,9 +4,31 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
+
+
+EXIT_SENTINEL = "__AGENTIC_TEAM_EXIT__="
+CAPTURE_RETRY_BUDGET = 2
+
+
+@dataclass
+class TmuxError(RuntimeError):
+    """Structured tmux execution failure."""
+
+    command: tuple[str, ...]
+    returncode: int | None
+    stderr: str
+
+    def __str__(self) -> str:
+        cmd = shlex.join(self.command)
+        if self.returncode is None:
+            return f"tmux command failed before execution: {cmd}. {self.stderr}"
+        detail = self.stderr.strip() or "no stderr output"
+        return f"tmux command failed ({self.returncode}): {cmd}. {detail}"
 
 
 @dataclass
@@ -23,6 +45,16 @@ class TmuxOrchestrator:
     def __init__(self, session_name: str) -> None:
         self.session_name = session_name
 
+    @staticmethod
+    def ensure_available() -> None:
+        """Fail fast with a friendly error when tmux is missing."""
+        if shutil.which("tmux") is None:
+            raise TmuxError(
+                command=("tmux",),
+                returncode=None,
+                stderr="tmux is not installed or not available on PATH.",
+            )
+
     # ── Session lifecycle ────────────────────────────────────────
 
     def session_exists(self) -> bool:
@@ -34,30 +66,34 @@ class TmuxOrchestrator:
 
     def create_session(self, working_dir: str, lead_command: str) -> None:
         """Create a detached tmux session and start the team lead."""
-        self._run([
-            "tmux", "new-session",
-            "-d",
-            "-s", self.session_name,
-            "-n", "lead",
-            "-c", working_dir,
-            "-x", "220",
-            "-y", "50",
-        ])
-        # Prevent tmux from renaming windows to the foreground process —
-        # we rely on stable window names for status tracking.
-        self._run([
-            "tmux", "set-option", "-t", self.session_name,
-            "allow-rename", "off",
-        ])
-        # Resize all windows when a client attaches, not just the active
-        # one.  Without this, worker windows keep the initial 220x50 size
-        # and TUI content renders off-screen in smaller terminals.
-        self._run([
-            "tmux", "set-option", "-t", self.session_name,
-            "window-size", "smallest",
-        ])
-        # Start the team lead agent in the first window
-        self.send_keys("lead", lead_command)
+        try:
+            self._run([
+                "tmux", "new-session",
+                "-d",
+                "-s", self.session_name,
+                "-n", "lead",
+                "-c", working_dir,
+                "-x", "220",
+                "-y", "50",
+            ])
+            # Prevent tmux from renaming windows to the foreground process —
+            # we rely on stable window names for status tracking.
+            self._run([
+                "tmux", "set-option", "-t", self.session_name,
+                "allow-rename", "off",
+            ])
+            # Resize all windows when a client attaches, not just the active
+            # one.  Without this, worker windows keep the initial 220x50 size
+            # and TUI content renders off-screen in smaller terminals.
+            self._run([
+                "tmux", "set-option", "-t", self.session_name,
+                "window-size", "smallest",
+            ])
+            # Start the team lead agent in the first window
+            self.send_shell_command("lead", lead_command)
+        except TmuxError:
+            self.kill_session()
+            raise
 
     def kill_session(self) -> None:
         if self.session_exists():
@@ -98,9 +134,13 @@ class TmuxOrchestrator:
         string itself — no pipe-pane needed.
         """
         self.create_window(window_name, working_dir)
-        self.send_keys(window_name, command)
-        if initial_prompt:
-            self._queue_prompt(window_name, initial_prompt, state_dir)
+        try:
+            self.send_shell_command(window_name, command)
+            if initial_prompt:
+                self._queue_prompt(window_name, initial_prompt, state_dir)
+        except (OSError, TmuxError):
+            self.kill_window(window_name)
+            raise
 
     def _queue_prompt(self, target: str, prompt: str, state_dir: Path) -> None:
         """Write a pending prompt file for an interactive worker.
@@ -124,33 +164,58 @@ class TmuxOrchestrator:
         delivered = []
         for prompt_file in pending_dir.iterdir():
             target = prompt_file.name
-            prompt = prompt_file.read_text()
+            try:
+                prompt = prompt_file.read_text()
+            except OSError as exc:
+                warnings.warn(
+                    f"Could not read pending prompt for {target}: {exc}",
+                    stacklevel=2,
+                )
+                continue
 
             # Check if the agent is ready by scanning the pane for known
             # prompt indicators from each provider's startup output.
-            try:
-                output = self.capture_pane(target, lines=30)
-                ready = any(
-                    indicator in output
-                    for indicator in (
-                        "Claude Code",      # Claude Code welcome banner
-                        "OpenAI Codex",     # Codex welcome banner
-                        "Gemini CLI",       # Gemini CLI welcome banner
-                        "Type your message",  # Gemini input prompt
-                    )
+            output = self._capture_pane_with_retry(target, lines=30)
+            if output is None:
+                continue
+            ready = any(
+                indicator in output
+                for indicator in (
+                    "Claude Code",      # Claude Code welcome banner
+                    "OpenAI Codex",     # Codex welcome banner
+                    "Gemini CLI",       # Gemini CLI welcome banner
+                    "Type your message",  # Gemini input prompt
                 )
-                if ready:
+            )
+            if ready:
+                try:
                     # TUI agents (Codex, Gemini) need a brief delay
                     # between text input and Enter for the submit to register
                     self.send_keys(target, prompt, delay=0.5)
+                except TmuxError as exc:
+                    warnings.warn(
+                        f"Could not deliver pending prompt to {target}: {exc}",
+                        stacklevel=2,
+                    )
+                    continue
+                try:
                     prompt_file.unlink()
-                    delivered.append(target)
-            except Exception:
-                pass
+                except OSError as exc:
+                    warnings.warn(
+                        f"Prompt for {target} was sent but its pending file could not be removed: {exc}",
+                        stacklevel=2,
+                    )
+                delivered.append(target)
 
         # Clean up empty dir
         if pending_dir.exists() and not list(pending_dir.iterdir()):
-            pending_dir.rmdir()
+            try:
+                pending_dir.rmdir()
+            except OSError as exc:
+                warnings.warn(
+                    f"Could not remove empty pending prompt directory {pending_dir}: {exc}",
+                    stacklevel=2,
+                )
 
         return delivered
 
@@ -183,6 +248,20 @@ class TmuxOrchestrator:
             "-t", f"{self.session_name}:{resolved}",
             "Enter",
         ])
+
+    def send_shell_command(
+        self,
+        target: str,
+        command: str,
+        state_dir: Path | None = None,
+    ) -> None:
+        """Send a shell command instrumented with an exit-code sentinel."""
+        wrapped = (
+            f"{command}; "
+            "__agentic_team_exit=$?; "
+            f"printf '\\n{EXIT_SENTINEL}%s\\n' \"$__agentic_team_exit\""
+        )
+        self.send_keys(target, wrapped, state_dir=state_dir)
 
     def capture_pane(
         self, target: str, lines: int = 50, state_dir: Path | None = None,
@@ -259,10 +338,18 @@ class TmuxOrchestrator:
         ], check=False)
 
         # Replace current process with tmux attach
-        os.execvp("tmux", [
-            "tmux", "attach-session",
-            "-t", self.session_name,
-        ])
+        self.ensure_available()
+        try:
+            os.execvp("tmux", [
+                "tmux", "attach-session",
+                "-t", self.session_name,
+            ])
+        except OSError as exc:
+            raise TmuxError(
+                command=("tmux", "attach-session", "-t", self.session_name),
+                returncode=exc.errno,
+                stderr=str(exc),
+            ) from exc
 
     def multi_attach(self, targets: list[str], state_dir: Path) -> None:
         """Join worker panes into a single tiled window and attach.
@@ -391,14 +478,51 @@ class TmuxOrchestrator:
             return 0
         return len(result.stdout.strip().splitlines())
 
+    def _capture_pane_with_retry(
+        self,
+        target: str,
+        lines: int,
+        state_dir: Path | None = None,
+        retries: int = CAPTURE_RETRY_BUDGET,
+    ) -> str | None:
+        """Retry transient capture-pane failures a bounded number of times."""
+        last_error: TmuxError | None = None
+        for _ in range(retries):
+            try:
+                return self.capture_pane(target, lines=lines, state_dir=state_dir)
+            except TmuxError as exc:
+                last_error = exc
+        if last_error is not None:
+            warnings.warn(
+                f"Could not capture tmux pane for {target} after {retries} attempts: {last_error}",
+                stacklevel=2,
+            )
+        return None
+
     def _run(
         self,
         args: list[str],
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            check=check,
-        )
+        self.ensure_available()
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise TmuxError(
+                command=tuple(args),
+                returncode=exc.errno,
+                stderr=str(exc),
+            ) from exc
+
+        if check and result.returncode != 0:
+            raise TmuxError(
+                command=tuple(args),
+                returncode=result.returncode,
+                stderr=result.stderr or result.stdout or "tmux returned a non-zero exit status.",
+            )
+        return result

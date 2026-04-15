@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import copy
 import os
+import shutil
 import sys
+import warnings
+from contextlib import ExitStack
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
 
 from . import agents, config, names, status, taskfile
 from .models import PROVIDERS
-from .tmux import TmuxOrchestrator
+from .tmux import TmuxError, TmuxOrchestrator
+
+
+PANE_CAPTURE_RETRY_BUDGET = 2
 
 
 # ── Custom group for bare `team "prompt"` support ────────────────
@@ -31,6 +40,12 @@ class TeamGroup(click.Group):
                 )
             args = ["send"] + args
         return super().parse_args(ctx, args)
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except (TmuxError, config.StateFileError, taskfile.TaskFileError) as exc:
+            raise click.ClickException(str(exc)) from exc
 
 
 # ── Main group ───────────────────────────────────────────────────
@@ -67,6 +82,147 @@ def _get_team(ctx: click.Context | None = None) -> config.TeamConfig:
         raise click.ClickException(
             "No active team. Run 'team init <name>' to create one."
         )
+
+
+@dataclass
+class _PathSnapshot:
+    path: Path
+    existed: bool
+    is_symlink: bool = False
+    link_target: str | None = None
+    data: bytes | None = None
+
+
+@dataclass
+class _RunAction:
+    kind: str
+    worker_name: str
+    task: str
+    workdir: str
+    provider: str
+    mode: str
+    model: str | None = None
+    command: str | None = None
+    initial_prompt: str | None = None
+    existing_window: bool = False
+
+
+def _snapshot_path(path: Path) -> _PathSnapshot:
+    """Capture a file or symlink so transactional commands can roll back."""
+    try:
+        if path.is_symlink():
+            return _PathSnapshot(
+                path=path,
+                existed=True,
+                is_symlink=True,
+                link_target=os.readlink(path),
+            )
+        if path.exists():
+            return _PathSnapshot(
+                path=path,
+                existed=True,
+                data=path.read_bytes(),
+            )
+    except OSError as exc:
+        raise config.StateFileError(
+            f"Could not snapshot {path} before updating it: {exc}. "
+            f"Resolve the filesystem issue and retry."
+        ) from exc
+    return _PathSnapshot(path=path, existed=False)
+
+
+def _restore_snapshot(snapshot: _PathSnapshot) -> None:
+    """Best-effort rollback for config/state files modified transactionally."""
+    path = snapshot.path
+    try:
+        if path.is_symlink() or path.exists():
+            path.unlink()
+        if not snapshot.existed:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot.is_symlink and snapshot.link_target is not None:
+            path.symlink_to(snapshot.link_target)
+        else:
+            path.write_bytes(snapshot.data or b"")
+    except OSError as exc:
+        warnings.warn(f"Could not restore {path} during rollback: {exc}", stacklevel=2)
+
+
+def _restore_workers_snapshot(team_name: str, workers: list[config.WorkerState]) -> None:
+    """Best-effort rollback for worker state persistence."""
+    try:
+        config.save_workers(team_name, workers)
+    except config.StateFileError as exc:
+        warnings.warn(
+            f"Could not restore worker state for team {team_name!r}: {exc}",
+            stacklevel=2,
+        )
+
+
+def _safe_kill_window(tmux: TmuxOrchestrator, window_name: str) -> None:
+    """Best-effort rollback for a worker window created during a failed flow."""
+    try:
+        tmux.kill_window(window_name)
+    except TmuxError as exc:
+        warnings.warn(f"Could not rollback tmux window {window_name!r}: {exc}", stacklevel=2)
+
+
+def _safe_kill_session(tmux: TmuxOrchestrator) -> None:
+    """Best-effort rollback for a session created during a failed init."""
+    try:
+        tmux.kill_session()
+    except TmuxError as exc:
+        warnings.warn(f"Could not rollback tmux session {tmux.session_name!r}: {exc}", stacklevel=2)
+
+
+def _safe_remove_tree(path: Path) -> None:
+    """Best-effort cleanup for directories created by a failed transaction."""
+    try:
+        if path.exists():
+            shutil.rmtree(path)
+    except OSError as exc:
+        warnings.warn(f"Could not remove {path} during rollback: {exc}", stacklevel=2)
+
+
+def _safe_unlink(path: Path) -> None:
+    """Best-effort cleanup for a file created during a failed transaction."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        warnings.warn(f"Could not remove {path} during rollback: {exc}", stacklevel=2)
+
+
+def _mark_worker_running(worker: config.WorkerState, task: str | None = None) -> None:
+    """Reset failure state when a worker is dispatched again."""
+    if task is not None:
+        worker.task = task
+    worker.status = "running"
+    worker.started_at = datetime.now(timezone.utc).isoformat()
+    worker.last_error = None
+    worker.exit_code = None
+
+
+def _capture_pane_text(
+    tmux: TmuxOrchestrator,
+    target: str,
+    *,
+    lines: int,
+    state_dir: Path | None = None,
+    context: str,
+) -> str | None:
+    """Retry capture-pane a bounded number of times before giving up."""
+    last_error: TmuxError | None = None
+    for _ in range(PANE_CAPTURE_RETRY_BUDGET):
+        try:
+            return tmux.capture_pane(target, lines=lines, state_dir=state_dir)
+        except TmuxError as exc:
+            last_error = exc
+    if last_error is not None:
+        warnings.warn(
+            f"{context} failed after {PANE_CAPTURE_RETRY_BUDGET} attempts: {last_error}",
+            stacklevel=2,
+        )
+    return None
 
 
 # ── team init ────────────────────────────────────────────────────
@@ -110,16 +266,6 @@ def init(
     working_dir: str,
 ) -> None:
     """Initialize a new team and start the team lead agent."""
-    # Check if team already exists with a live session
-    if name in config.list_teams():
-        existing_tmux = TmuxOrchestrator(f"team-{name}")
-        if existing_tmux.session_exists():
-            raise click.ClickException(
-                f"Team {name!r} is already running. Use 'team stop {name}' first."
-            )
-        # Stale config, no session — overwrite it
-        click.echo(f"Overwriting stale config for {name!r}.")
-
     team = config.TeamConfig(
         name=name,
         provider=provider,
@@ -129,11 +275,26 @@ def init(
         max_workers=max_workers,
         working_dir=working_dir,
     )
+    tmux = TmuxOrchestrator(team.tmux_session)
+    tmux.ensure_available()
 
-    # Save config and set as active
-    config.save_team(team)
-    config.set_active_team(name)
-    config.save_workers(name, [])
+    # Check if team already exists with a live session
+    if name in config.list_teams():
+        existing_tmux = TmuxOrchestrator(team.tmux_session)
+        if existing_tmux.session_exists():
+            raise click.ClickException(
+                f"Team {name!r} is already running. Use 'team stop {name}' first."
+            )
+        # Stale config, no session — overwrite it
+        click.echo(f"Overwriting stale config for {name!r}.")
+
+    team_config_path = config.TEAMS_DIR / f"{name}.toml"
+    workers_path = config.STATE_DIR / name / "workers.toml"
+    current_log_link = config.LOGS_DIR / name / "current"
+    config_snapshot = _snapshot_path(team_config_path)
+    workers_snapshot = _snapshot_path(workers_path)
+    active_snapshot = _snapshot_path(config.ACTIVE_LINK)
+    log_snapshot = _snapshot_path(current_log_link)
 
     # Create a timestamped session log directory
     session_log_dir = config.create_session_log_dir(name)
@@ -144,11 +305,24 @@ def init(
         team, prompt_file, log_path=session_log_dir / "lead.log",
     )
 
-    # Create tmux session and start the lead
-    tmux = TmuxOrchestrator(team.tmux_session)
-    if tmux.session_exists():
-        tmux.kill_session()
-    tmux.create_session(working_dir, lead_cmd)
+    with ExitStack() as rollback:
+        rollback.callback(_restore_snapshot, log_snapshot)
+        rollback.callback(_restore_snapshot, active_snapshot)
+        rollback.callback(_restore_snapshot, workers_snapshot)
+        rollback.callback(_restore_snapshot, config_snapshot)
+        rollback.callback(_safe_remove_tree, session_log_dir)
+        rollback.callback(_safe_unlink, prompt_file)
+
+        # Save config and set as active before any external side effects.
+        config.save_team(team)
+        config.set_active_team(name)
+        config.save_workers(name, [])
+
+        if tmux.session_exists():
+            tmux.kill_session()
+        rollback.callback(_safe_kill_session, tmux)
+        tmux.create_session(working_dir, lead_cmd)
+        rollback.pop_all()
 
     click.echo(f"Team {name!r} initialized.")
     click.echo(f"  Provider: {provider}" + (f" ({model})" if model else ""))
@@ -219,6 +393,7 @@ def spawn_worker(
     """Spawn a new worker agent."""
     team = _get_team()
     workers = config.load_workers(team.name)
+    original_workers = copy.deepcopy(workers)
 
     # Check limits
     running = [w for w in workers if w.status == "running"]
@@ -236,6 +411,8 @@ def spawn_worker(
     # Generate name
     existing_names = [w.name for w in workers]
     worker_name = name or names.name_from_task(task, existing_names)
+    if worker_name in existing_names:
+        raise click.ClickException(f"Worker name {worker_name!r} is already in use.")
 
     # Validate resume-session support
     if resume_session:
@@ -249,6 +426,8 @@ def spawn_worker(
 
     # Build command with log path
     workdir = working_dir or team.working_dir
+    if not Path(workdir).is_dir():
+        raise click.ClickException(f"Working directory {workdir!r} does not exist.")
     session_log_dir = config.current_session_log_dir(team.name)
     if not session_log_dir:
         session_log_dir = config.create_session_log_dir(team.name)
@@ -276,14 +455,17 @@ def spawn_worker(
 
     # Spawn in tmux
     tmux = TmuxOrchestrator(team.tmux_session)
+    tmux.ensure_available()
+    if not tmux.session_exists():
+        raise click.ClickException(
+            f"tmux session {team.tmux_session!r} not found. Run 'team init' first."
+        )
     state_dir = config.STATE_DIR / team.name
     # For interactive workers, send the task as an initial prompt after the agent starts.
     # For oneshot (including resume), the prompt is baked into the command.
     initial_prompt = task if mode == "interactive" else None
-    tmux.spawn_worker(worker_name, worker_cmd, workdir, state_dir, initial_prompt=initial_prompt)
 
     # Detect if spawned by the lead agent (running inside the team's tmux session)
-    import os
     source = "lead" if os.environ.get("TMUX", "") else "cli"
 
     # Record state
@@ -297,8 +479,19 @@ def spawn_worker(
         source=source,
         session_id=resume_session,
     )
-    workers.append(worker)
-    config.save_workers(team.name, workers)
+
+    with ExitStack() as rollback:
+        rollback.callback(_restore_workers_snapshot, team.name, original_workers)
+        config.save_workers(team.name, workers + [worker])
+        rollback.callback(_safe_kill_window, tmux, worker_name)
+        tmux.spawn_worker(
+            worker_name,
+            worker_cmd,
+            workdir,
+            state_dir,
+            initial_prompt=initial_prompt,
+        )
+        rollback.pop_all()
 
     click.echo(f"Spawned worker {worker_name!r} ({mode}) — {task}")
 
@@ -315,6 +508,13 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
     team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
     workers = config.load_workers(team.name)
+    original_workers = copy.deepcopy(workers)
+
+    tmux.ensure_available()
+    if not tmux.session_exists():
+        raise click.ClickException(
+            f"tmux session {team.tmux_session!r} not found. Run 'team init' first."
+        )
 
     # Find worker (support partial match)
     matched = names.match_name(worker_name, [w.name for w in workers])
@@ -324,9 +524,17 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
 
     if worker.mode == "interactive":
         # Interactive agent is still alive — send directly as input
-        tmux.send_keys(worker.tmux_window, text)
-        worker.status = "running"
-        config.save_workers(team.name, workers)
+        window_names = {window.name for window in tmux.list_windows()}
+        if worker.tmux_window not in window_names:
+            raise click.ClickException(
+                f"Interactive worker {matched!r} no longer has a live tmux window."
+            )
+        _mark_worker_running(worker)
+        with ExitStack() as rollback:
+            rollback.callback(_restore_workers_snapshot, team.name, original_workers)
+            config.save_workers(team.name, workers)
+            tmux.send_keys(worker.tmux_window, text)
+            rollback.pop_all()
         click.echo(f"Sent to {matched}.")
     elif worker.mode == "oneshot" and worker.session_id:
         # Resume via --resume flag
@@ -339,9 +547,17 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
             log_path=log_path,
         )
         state_dir = config.STATE_DIR / team.name
-        tmux.spawn_worker(matched, resume_cmd, team.working_dir, state_dir)
-        worker.status = "running"
-        config.save_workers(team.name, workers)
+        window_names = {window.name for window in tmux.list_windows()}
+        _mark_worker_running(worker)
+        with ExitStack() as rollback:
+            rollback.callback(_restore_workers_snapshot, team.name, original_workers)
+            config.save_workers(team.name, workers)
+            if matched in window_names:
+                tmux.send_shell_command(matched, resume_cmd, state_dir=state_dir)
+            else:
+                rollback.callback(_safe_kill_window, tmux, matched)
+                tmux.spawn_worker(matched, resume_cmd, team.working_dir, state_dir)
+            rollback.pop_all()
         click.echo(f"Resumed {matched} with session {worker.session_id[:8]}...")
     else:
         raise click.ClickException(
@@ -454,7 +670,14 @@ def wait(timeout: int, interval: int) -> None:
 
         elapsed = int(time.time() - start)
         done = [w for w in workers if w["status"] == "done"]
-        click.echo(f"\nAll {len(done)} worker(s) done in {elapsed}s.")
+        errors = [w for w in workers if w["status"] == "error"]
+        if errors:
+            click.echo(
+                f"\nAll workers reached a terminal state in {elapsed}s: "
+                f"{len(done)} done, {len(errors)} error."
+            )
+        else:
+            click.echo(f"\nAll {len(done)} worker(s) done in {elapsed}s.")
     finally:
         if old_settings is not None:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
@@ -527,10 +750,15 @@ def _standup_done(report_path: Path) -> bool:
 
 def _lead_is_idle(tmux: TmuxOrchestrator, provider: str) -> bool:
     """Check if the lead agent is idle (not actively processing)."""
-    try:
-        raw = tmux.capture_pane("lead", lines=30).rstrip()
-    except Exception:
+    raw = _capture_pane_text(
+        tmux,
+        "lead",
+        lines=30,
+        context="checking lead idleness",
+    )
+    if raw is None:
         return False
+    raw = raw.rstrip()
     tail = "\n".join(raw.splitlines()[-10:])
     if provider == "claude":
         return "esc to inter" not in tail and len(
@@ -624,12 +852,18 @@ def _show_standup_result(tmux: TmuxOrchestrator, report_path: Path) -> None:
         click.echo()
         click.echo("(Lead didn't write the report file — showing pane output)")
         click.echo()
-        try:
-            output = tmux.capture_pane("lead", lines=80).rstrip()
+        output = _capture_pane_text(
+            tmux,
+            "lead",
+            lines=80,
+            context="capturing standup output",
+        )
+        if output is not None:
+            output = output.rstrip()
             for line in output.splitlines():
                 if line.strip():
                     click.echo(line)
-        except Exception:
+        else:
             click.echo("Could not capture lead pane.")
 
 
@@ -646,10 +880,16 @@ def _pane_tail(
 
     Strips blank lines and separator-only lines (───).
     """
-    try:
-        raw = tmux.capture_pane(target, lines=30, state_dir=state_dir).rstrip()
-    except Exception:
+    raw = _capture_pane_text(
+        tmux,
+        target,
+        lines=30,
+        state_dir=state_dir,
+        context=f"capturing pane tail for {target}",
+    )
+    if raw is None:
         return "(pane not available)"
+    raw = raw.rstrip()
     lines = [
         l.rstrip() for l in raw.splitlines()
         if l.strip()
@@ -849,15 +1089,21 @@ def logs(worker_name: str | None, tail: int, show_all: bool) -> None:
             for line in lines[-tail:]:
                 click.echo(line)
         elif tmux.session_exists():
-            try:
-                output = tmux.capture_pane(matched, lines=tail, state_dir=state_dir)
+            output = _capture_pane_text(
+                tmux,
+                matched,
+                lines=tail,
+                state_dir=state_dir,
+                context=f"capturing logs for {matched}",
+            )
+            if output is not None:
                 pane_lines = [l for l in output.splitlines() if l.strip()]
                 if pane_lines:
                     for line in pane_lines[-tail:]:
                         click.echo(line)
                 else:
                     click.echo("  (no output yet)")
-            except Exception:
+            else:
                 click.echo("  (pane not available)")
         else:
             click.echo("  (no log file)")
@@ -1000,110 +1246,196 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
 
     to_act = actionable[:slots]
 
+    planned_workers = copy.deepcopy(workers)
+    planned_by_name = {w.name: w for w in planned_workers}
+    reserved_names = set(planned_by_name)
+
+    plan_specs: list[tuple[str, taskfile.TaskEntry, config.WorkerState | None, str, str, str | None, str, str]] = []
+    for entry in to_act:
+        prov = entry.provider or team.provider
+        if prov not in PROVIDERS:
+            raise click.ClickException(f"Unknown provider {prov!r} in {path}.")
+        mode = entry.mode or team.worker_mode
+        if mode not in {"oneshot", "interactive"}:
+            raise click.ClickException(f"Unsupported worker mode {mode!r} in {path}.")
+        model = entry.model or team.model
+        workdir = entry.working_dir or team.working_dir
+        if not Path(workdir).is_dir():
+            raise click.ClickException(
+                f"Task {entry.task!r} references missing working directory {workdir!r}."
+            )
+
+        existing_worker = planned_by_name.get(entry.worker_name) if entry.worker_name else None
+        if existing_worker and existing_worker.status == "done":
+            _mark_worker_running(existing_worker, task=entry.task)
+            plan_specs.append(("rerun", entry, existing_worker, existing_worker.name, prov, model, mode, workdir))
+            continue
+
+        worker_name = entry.name or names.name_from_task(entry.task, list(reserved_names))
+        if worker_name in reserved_names:
+            raise click.ClickException(
+                f"Task {entry.task!r} wants worker name {worker_name!r}, but that name is already in use."
+            )
+
+        new_worker = config.WorkerState(
+            name=worker_name,
+            task=entry.task,
+            provider=prov,
+            model=model,
+            mode=mode,
+            tmux_window=worker_name,
+            source="file",
+        )
+        planned_workers.append(new_worker)
+        planned_by_name[worker_name] = new_worker
+        reserved_names.add(worker_name)
+        plan_specs.append(("spawn", entry, new_worker, worker_name, prov, model, mode, workdir))
+
     if dry_run:
-        for entry in to_act:
-            wd = entry.working_dir or team.working_dir
-            prov = entry.provider or team.provider
-            mode = entry.mode or team.worker_mode
-            is_rerun = entry in rerun_tasks
-            tag = " (rerun)" if is_rerun else ""
+        for kind, entry, existing_worker, worker_name, prov, _, mode, workdir in plan_specs:
+            tag = " (rerun)" if kind == "rerun" else ""
             click.echo(f"  - {entry.task}{tag}")
-            click.echo(f"    dir={wd}  provider={prov}  mode={mode}")
+            click.echo(f"    worker={worker_name}  dir={workdir}  provider={prov}  mode={mode}")
         return
 
     tmux = TmuxOrchestrator(team.tmux_session)
+    tmux.ensure_available()
     if not tmux.session_exists():
         raise click.ClickException(
             f"tmux session {team.tmux_session!r} not found. Run 'team init' first."
         )
 
-    spawned = 0
-    resumed = 0
+    live_windows = {window.name for window in tmux.list_windows()}
+    session_log_dir = config.current_session_log_dir(team.name)
+    if not session_log_dir:
+        session_log_dir = config.create_session_log_dir(team.name)
 
-    for entry in to_act:
-        prov = entry.provider or team.provider
-        mode = entry.mode or team.worker_mode
-        model = entry.model or team.model
-        workdir = entry.working_dir or team.working_dir
-
-        # Check if this is a rerun with an existing worker
-        existing_worker = worker_by_name.get(entry.worker_name) if entry.worker_name else None
-
-        if existing_worker and existing_worker.status == "done":
-            # Re-run: send the task to the existing worker
-            worker_name = existing_worker.name
-            session_log_dir = config.current_session_log_dir(team.name)
-            if not session_log_dir:
-                session_log_dir = config.create_session_log_dir(team.name)
-            log_path = session_log_dir / f"{worker_name}.log"
-
+    actions: list[_RunAction] = []
+    for kind, entry, existing_worker, worker_name, prov, model, mode, workdir in plan_specs:
+        log_path = session_log_dir / f"{worker_name}.log"
+        if kind == "rerun" and existing_worker is not None:
             if existing_worker.mode == "interactive":
-                # Interactive agent is still running — just send the task as input
-                tmux.send_keys(worker_name, entry.task)
-            elif existing_worker.session_id and prov == "claude":
-                # Oneshot with session ID — resume with context
-                resume_cmd = agents.build_resume_command(
-                    prov, existing_worker.session_id, entry.task,
-                    log_path=log_path,
-                )
-                tmux.send_keys(worker_name, resume_cmd)
-            else:
-                # Oneshot without session ID — re-run the full command
-                worker_cmd = agents.build_worker_command(
-                    provider_name=prov,
+                if existing_worker.tmux_window not in live_windows:
+                    raise click.ClickException(
+                        f"Interactive worker {worker_name!r} no longer has a live tmux window."
+                    )
+                actions.append(_RunAction(
+                    kind="rerun-interactive",
+                    worker_name=worker_name,
                     task=entry.task,
-                    mode=mode,
-                    model=model,
-                    permissions=team.permissions,
-                    team_name=team.name,
-                    working_dir=workdir,
+                    workdir=workdir,
+                    provider=existing_worker.provider,
+                    mode=existing_worker.mode,
+                    model=existing_worker.model,
+                    existing_window=True,
+                ))
+                continue
+
+            if existing_worker.session_id and existing_worker.provider == "claude":
+                command = agents.build_resume_command(
+                    existing_worker.provider,
+                    existing_worker.session_id,
+                    entry.task,
                     log_path=log_path,
                 )
-                tmux.send_keys(worker_name, worker_cmd)
+                actions.append(_RunAction(
+                    kind="rerun-shell",
+                    worker_name=worker_name,
+                    task=entry.task,
+                    workdir=workdir,
+                    provider=existing_worker.provider,
+                    mode=existing_worker.mode,
+                    model=existing_worker.model,
+                    command=command,
+                    existing_window=worker_name in live_windows,
+                ))
+                continue
 
-            existing_worker.status = "running"
-            resumed += 1
-            click.echo(f"  {worker_name} | {entry.task} (rerun)")
-        else:
-            # New task — spawn a fresh worker
-            existing_names = [w.name for w in workers]
-            worker_name = entry.name or names.name_from_task(entry.task, existing_names)
-
-            session_log_dir = config.current_session_log_dir(team.name)
-            if not session_log_dir:
-                session_log_dir = config.create_session_log_dir(team.name)
-            log_path = session_log_dir / f"{worker_name}.log"
-
-            worker_cmd = agents.build_worker_command(
-                provider_name=prov,
+            command = agents.build_worker_command(
+                provider_name=existing_worker.provider,
                 task=entry.task,
-                mode=mode,
-                model=model,
+                mode=existing_worker.mode,
+                model=existing_worker.model or model,
                 permissions=team.permissions,
                 team_name=team.name,
                 working_dir=workdir,
                 log_path=log_path,
             )
-
-            state_dir = config.STATE_DIR / team.name
-            initial_prompt = entry.task if mode == "interactive" else None
-            tmux.spawn_worker(worker_name, worker_cmd, workdir, state_dir, initial_prompt=initial_prompt)
-
-            worker = config.WorkerState(
-                name=worker_name,
+            actions.append(_RunAction(
+                kind="rerun-shell",
+                worker_name=worker_name,
                 task=entry.task,
-                provider=prov,
-                model=model,
-                mode=mode,
-                tmux_window=worker_name,
-                source="file",
-            )
-            workers.append(worker)
-            worker_by_name[worker_name] = worker
-            spawned += 1
-            click.echo(f"  {worker_name} | {entry.task}")
+                workdir=workdir,
+                provider=existing_worker.provider,
+                mode=existing_worker.mode,
+                model=existing_worker.model or model,
+                command=command,
+                existing_window=worker_name in live_windows,
+            ))
+            continue
 
-    config.save_workers(team.name, workers)
+        command = agents.build_worker_command(
+            provider_name=prov,
+            task=entry.task,
+            mode=mode,
+            model=model,
+            permissions=team.permissions,
+            team_name=team.name,
+            working_dir=workdir,
+            log_path=log_path,
+        )
+        actions.append(_RunAction(
+            kind="spawn",
+            worker_name=worker_name,
+            task=entry.task,
+            workdir=workdir,
+            provider=prov,
+            mode=mode,
+            model=model,
+            command=command,
+            initial_prompt=entry.task if mode == "interactive" else None,
+        ))
+
+    original_workers = copy.deepcopy(workers)
+    state_dir = config.STATE_DIR / team.name
+    spawned = 0
+    resumed = 0
+
+    with ExitStack() as rollback:
+        rollback.callback(_restore_workers_snapshot, team.name, original_workers)
+        config.save_workers(team.name, planned_workers)
+
+        for action in actions:
+            if action.kind == "spawn" and action.command is not None:
+                rollback.callback(_safe_kill_window, tmux, action.worker_name)
+                tmux.spawn_worker(
+                    action.worker_name,
+                    action.command,
+                    action.workdir,
+                    state_dir,
+                    initial_prompt=action.initial_prompt,
+                )
+                spawned += 1
+                click.echo(f"  {action.worker_name} | {action.task}")
+                continue
+
+            if action.kind == "rerun-interactive":
+                tmux.send_keys(action.worker_name, action.task)
+                resumed += 1
+                click.echo(f"  {action.worker_name} | {action.task} (rerun)")
+                continue
+
+            if action.kind == "rerun-shell" and action.command is not None:
+                if action.existing_window:
+                    tmux.send_shell_command(action.worker_name, action.command, state_dir=state_dir)
+                else:
+                    rollback.callback(_safe_kill_window, tmux, action.worker_name)
+                    tmux.spawn_worker(action.worker_name, action.command, action.workdir, state_dir)
+                resumed += 1
+                click.echo(f"  {action.worker_name} | {action.task} (rerun)")
+                continue
+
+        rollback.pop_all()
 
     # Try to deliver pending prompts (agents may need a moment to start)
     import time

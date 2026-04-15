@@ -11,8 +11,10 @@ Supported inline overrides: provider, mode, model, name
 
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 # Matches: - [ ] task text (key: val, key: val)
@@ -36,6 +38,10 @@ _ANNOTATION_RE = re.compile(
 )
 
 
+class TaskFileError(RuntimeError):
+    """Raised when a markdown task file cannot be read or updated safely."""
+
+
 @dataclass
 class TaskEntry:
     """A single task parsed from a markdown file."""
@@ -56,6 +62,43 @@ class TaskEntry:
     elapsed: str | None = None
 
 
+def _read_task_text(path: Path) -> str:
+    """Read a task file with recovery guidance on I/O failure."""
+    try:
+        return path.read_text()
+    except OSError as exc:
+        raise TaskFileError(
+            f"Could not read task file at {path}: {exc}. "
+            f"Check permissions or restore the file, then retry."
+        ) from exc
+
+
+def _atomic_write_text(path: Path, text: str, description: str) -> None:
+    """Write task files atomically to avoid partial updates."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(path)
+    except OSError as exc:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise TaskFileError(
+            f"Could not write {description} at {path}: {exc}. "
+            f"Check permissions, free disk space, or restore the file and retry."
+        ) from exc
+
+
 def parse_task_file(path: Path) -> list[TaskEntry]:
     """Parse a markdown task file into TaskEntry objects.
 
@@ -63,7 +106,7 @@ def parse_task_file(path: Path) -> list[TaskEntry]:
     Only unchecked (- [ ]) tasks are returned with done=False.
     Checked (- [x]) tasks are returned with done=True.
     """
-    text = path.read_text()
+    text = _read_task_text(path)
     lines = text.splitlines()
     tasks: list[TaskEntry] = []
     current_dir: str | None = None
@@ -140,7 +183,7 @@ def update_task_file(path: Path, updates: dict[int, TaskEntry]) -> None:
             If entry.done is True, the checkbox is ticked.
             If entry.worker_name is set, a ← annotation is appended.
     """
-    lines = path.read_text().splitlines()
+    lines = _read_task_text(path).splitlines()
 
     for line_num, entry in updates.items():
         if line_num >= len(lines):
@@ -172,4 +215,4 @@ def update_task_file(path: Path, updates: dict[int, TaskEntry]) -> None:
 
         lines[line_num] = f"{indent}- [{check}] {raw_text}{annotation}"
 
-    path.write_text("\n".join(lines) + "\n")
+    _atomic_write_text(path, "\n".join(lines) + "\n", "task file")
