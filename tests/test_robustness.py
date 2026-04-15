@@ -13,7 +13,7 @@ from click.testing import CliRunner
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agentic_team import cli, config, status, taskfile  # noqa: E402
-from agentic_team.tmux import TmuxError, TmuxWindow  # noqa: E402
+from agentic_team.tmux import TmuxError, TmuxSnapshot, TmuxWindow  # noqa: E402
 
 
 class FakeTmux:
@@ -30,22 +30,31 @@ class FakeTmux:
         self._dead_targets = dead_targets or set()
         self._delivered = delivered or []
 
-    def list_windows(self) -> list[TmuxWindow]:
+    def get_snapshot(self, state_dir: Path | None = None, max_age: float = 0) -> TmuxSnapshot:
+        win_dict = {w.name: w for w in self._windows}
+        pane_dead = {w.name: w.pane_dead for w in self._windows}
+        pane_dead.update({t: True for t in self._dead_targets})
+        return TmuxSnapshot(
+            windows=win_dict,
+            pane_dead=pane_dead,
+        )
+
+    def list_windows(self, snapshot: TmuxSnapshot | None = None) -> list[TmuxWindow]:
         return self._windows
 
-    def deliver_pending_prompts(self, state_dir: Path) -> list[str]:
+    def deliver_pending_prompts(self, state_dir: Path, snapshot: TmuxSnapshot | None = None) -> list[str]:
         return list(self._delivered)
 
-    def capture_pane(self, target: str, lines: int = 50, state_dir: Path | None = None) -> str:
+    def capture_pane(self, target: str, lines: int = 50, state_dir: Path | None = None, snapshot: TmuxSnapshot | None = None) -> str:
         return self._pane_output.get(target, "")
 
     def capture_pane_safe(
         self, target: str, lines: int = 50, state_dir: Path | None = None,
-        retries: int = 2, context: str = "",
+        snapshot: TmuxSnapshot | None = None, retries: int = 2, context: str = "",
     ) -> str | None:
         return self._pane_output.get(target)
 
-    def is_pane_dead(self, target: str, state_dir: Path | None = None) -> bool:
+    def is_pane_dead(self, target: str, state_dir: Path | None = None, snapshot: TmuxSnapshot | None = None) -> bool:
         return target in self._dead_targets
 
 

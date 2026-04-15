@@ -14,7 +14,7 @@ from .config import (
     load_workers,
     save_workers,
 )
-from .tmux import EXIT_SENTINEL, TmuxOrchestrator
+from .tmux import EXIT_SENTINEL, TmuxOrchestrator, TmuxSnapshot
 
 
 PROMPT_DELIVERY_TIMEOUT_SECONDS = 30
@@ -22,36 +22,37 @@ _EXIT_RE = re.compile(re.escape(EXIT_SENTINEL) + r"(?P<code>\d+)")
 _COMMAND_NOT_FOUND_RE = re.compile(r"command not found", re.IGNORECASE)
 
 
-def get_team_status(config: TeamConfig) -> dict:
+def get_team_status(
+    config: TeamConfig,
+    tmux: TmuxOrchestrator | None = None,
+    snapshot: TmuxSnapshot | None = None,
+) -> dict:
     """Check the status of all workers, updating state as needed.
 
     Returns a dict with team info and worker statuses.
     """
-    tmux = TmuxOrchestrator(config.tmux_session)
+    tmux = tmux or TmuxOrchestrator(config.tmux_session)
     workers = load_workers(config.name)
-    windows = {w.name: w for w in tmux.list_windows()}
     state_dir = STATE_DIR / config.name
+    snapshot = snapshot or tmux.get_snapshot(state_dir, max_age=0)
+    windows = {w.name: w for w in tmux.list_windows(snapshot=snapshot)}
     updated = False
 
     # In multi mode, workers are joined into the host window — their
-    # original window names won't appear in list-windows.  Track which
+    # original window names won't appear in list-windows. Track which
     # workers are joined so we don't falsely mark them as done.
-    multi_file = state_dir / "multi_targets"
-    multi_joined: set[str] = set()
-    if multi_file.exists():
-        multi_joined = set(multi_file.read_text().strip().splitlines())
+    multi_joined = set(snapshot.multi_targets)
 
     # Deliver any pending prompts to interactive workers that are now ready
-    delivered = tmux.deliver_pending_prompts(state_dir)
+    delivered = tmux.deliver_pending_prompts(state_dir, snapshot=snapshot)
     if delivered:
         updated = True
+    recently_delivered = set(delivered)
 
     # Check which workers still have pending (undelivered) prompts —
     # they haven't started working yet, so skip idle detection for them.
+    pending_workers = _pending_workers(state_dir)
     pending_dir = state_dir / "pending_prompts"
-    pending_workers: set[str] = set()
-    if pending_dir.exists():
-        pending_workers = {f.name for f in pending_dir.iterdir()}
 
     for worker in workers:
         prompt_file = pending_dir / worker.name
@@ -63,12 +64,25 @@ def get_team_status(config: TeamConfig) -> dict:
                 worker.tmux_window in windows
                 or worker.tmux_window in multi_joined
             )
-            if in_windows and not tmux.is_pane_dead(worker.tmux_window, state_dir=state_dir):
-                if _is_waiting_for_input(worker, tmux, state_dir):
-                    worker.status = "waiting"
-                    updated = True
-                elif not _is_interactive_idle(worker, tmux, state_dir):
-                    updated = _set_worker_running(worker) or updated
+            if in_windows:
+                if worker.tmux_window in windows:
+                    pane_dead = windows[worker.tmux_window].pane_dead
+                else:
+                    pane_dead = tmux.is_pane_dead(
+                        worker.tmux_window,
+                        state_dir=state_dir,
+                        snapshot=snapshot,
+                    )
+                if not pane_dead:
+                    if _is_waiting_for_input(
+                        worker, tmux, state_dir, snapshot=snapshot,
+                    ):
+                        worker.status = "waiting"
+                        updated = True
+                    elif not _is_interactive_idle(
+                        worker, tmux, state_dir, snapshot=snapshot,
+                    ):
+                        updated = _set_worker_running(worker) or updated
             continue
 
         if worker.status not in ("running", "waiting"):
@@ -121,7 +135,15 @@ def get_team_status(config: TeamConfig) -> dict:
             continue
 
         # Check if the pane process has exited
-        if tmux.is_pane_dead(worker.tmux_window, state_dir=state_dir):
+        if worker.tmux_window in windows:
+            pane_dead = windows[worker.tmux_window].pane_dead
+        else:
+            pane_dead = tmux.is_pane_dead(
+                worker.tmux_window,
+                state_dir=state_dir,
+                snapshot=snapshot,
+            )
+        if pane_dead:
             updated = _set_worker_error(
                 worker,
                 "tmux pane exited unexpectedly while the worker was still running",
@@ -129,7 +151,7 @@ def get_team_status(config: TeamConfig) -> dict:
             continue
 
         # Check if the worker is blocked waiting for user confirmation
-        if _is_waiting_for_input(worker, tmux, state_dir):
+        if _is_waiting_for_input(worker, tmux, state_dir, snapshot=snapshot):
             if worker.status != "waiting":
                 worker.status = "waiting"
                 updated = True
@@ -143,9 +165,21 @@ def get_team_status(config: TeamConfig) -> dict:
         # For oneshot workers, the pane stays alive (drops to shell) after
         # the agent command finishes. Detect completion by checking the
         # capture-pane output for a shell prompt or JSON result.
-        if worker.mode == "oneshot" and _is_oneshot_done(config, worker, tmux, state_dir):
+        if worker.mode == "oneshot" and _is_oneshot_done(
+            config,
+            worker,
+            tmux,
+            state_dir,
+            snapshot=snapshot,
+        ):
             updated = _set_worker_done(worker, exit_code=0) or updated
-            _try_extract_session_id(config, worker)
+            _try_extract_session_id(
+                config,
+                worker,
+                tmux=tmux,
+                state_dir=state_dir,
+                snapshot=snapshot,
+            )
 
         # For interactive workers, the agent stays running but returns to
         # its input prompt (❯) after completing a task. Detect "idle" state.
@@ -162,7 +196,13 @@ def get_team_status(config: TeamConfig) -> dict:
         if (
             worker.mode == "interactive"
             and worker.name not in pending_workers
-            and _is_interactive_idle(worker, tmux, state_dir)
+            and worker.name not in recently_delivered
+            and _is_interactive_idle(
+                worker,
+                tmux,
+                state_dir,
+                snapshot=snapshot,
+            )
         ):
             updated = _set_worker_done(worker) or updated
 
@@ -279,6 +319,7 @@ def format_status(status: dict) -> None:
 def _is_oneshot_done(
     config: TeamConfig, worker: WorkerState, tmux: TmuxOrchestrator,
     state_dir: Path | None = None,
+    snapshot: TmuxSnapshot | None = None,
 ) -> bool:
     """Detect if a oneshot worker's command has finished.
 
@@ -292,6 +333,7 @@ def _is_oneshot_done(
         worker.tmux_window,
         lines=80,
         state_dir=state_dir,
+        snapshot=snapshot,
         context=f"checking oneshot completion for {worker.name}",
     )
     if output is None:
@@ -346,6 +388,7 @@ def _is_oneshot_done(
 def _is_interactive_idle(
     worker: WorkerState, tmux: TmuxOrchestrator,
     state_dir: Path | None = None,
+    snapshot: TmuxSnapshot | None = None,
 ) -> bool:
     """Detect if an interactive worker has finished its task and is idle.
 
@@ -362,6 +405,7 @@ def _is_interactive_idle(
         worker.tmux_window,
         lines=30,
         state_dir=state_dir,
+        snapshot=snapshot,
         context=f"checking interactive idleness for {worker.name}",
     )
     if raw is None:
@@ -418,6 +462,7 @@ def _is_interactive_idle(
 def _is_waiting_for_input(
     worker: WorkerState, tmux: TmuxOrchestrator,
     state_dir: Path | None = None,
+    snapshot: TmuxSnapshot | None = None,
 ) -> bool:
     """Detect if a worker is blocked waiting for user confirmation.
 
@@ -429,6 +474,7 @@ def _is_waiting_for_input(
     try:
         raw = tmux.capture_pane(
             worker.tmux_window, lines=20, state_dir=state_dir,
+            snapshot=snapshot,
         )
     except Exception:
         return False
@@ -463,7 +509,13 @@ def _is_waiting_for_input(
     return False
 
 
-def _try_extract_session_id(config: TeamConfig, worker: WorkerState) -> None:
+def _try_extract_session_id(
+    config: TeamConfig,
+    worker: WorkerState,
+    tmux: TmuxOrchestrator | None = None,
+    state_dir: Path | None = None,
+    snapshot: TmuxSnapshot | None = None,
+) -> None:
     """Try to parse session_id from claude oneshot output.
 
     Uses capture-pane text (clean) rather than raw pipe-pane logs
@@ -474,10 +526,12 @@ def _try_extract_session_id(config: TeamConfig, worker: WorkerState) -> None:
         return
 
     # Try capture-pane first (clean text, may be wrapped across lines)
-    tmux = TmuxOrchestrator(config.tmux_session)
+    tmux = tmux or TmuxOrchestrator(config.tmux_session)
     output = tmux.capture_pane_safe(
         worker.tmux_window,
         lines=80,
+        state_dir=state_dir,
+        snapshot=snapshot,
         context=f"extracting session id for {worker.name}",
     )
     if output is None:
@@ -608,3 +662,10 @@ def _set_worker_error(
     worker.last_error = last_error
     worker.exit_code = exit_code
     return changed
+
+
+def _pending_workers(state_dir: Path) -> set[str]:
+    pending_dir = state_dir / "pending_prompts"
+    if not pending_dir.exists():
+        return set()
+    return {f.name for f in pending_dir.iterdir()}
