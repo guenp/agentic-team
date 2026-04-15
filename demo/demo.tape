@@ -6,7 +6,7 @@ Output demo/demo.gif
 Require team
 Require tmux
 
-Set Shell "zsh"
+Set Shell "bash"
 Set FontSize 20
 Set Width 1400
 Set Height 800
@@ -16,15 +16,26 @@ Set BorderRadius 8
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 40ms
 
+# ── Hide shell startup and set a clean prompt ──────────────────
+
+Hide
+Type "export PS1='$ '"
+Enter
+Type "clear"
+Enter
+Sleep 0.5
+Show
+
 # ── Show the task file ──────────────────────────────────────────
 
 Type "cat demo/tasks.md"
 Enter
 Sleep 2
+Enter
 
 # ── Initialize a team ──────────────────────────────────────────
 
-Type "team init demo --provider claude"
+Type "team init demo"
 Enter
 Sleep 3
 
@@ -32,7 +43,7 @@ Sleep 3
 
 Type "team run demo/tasks.md"
 Enter
-Sleep 12
+Sleep 2
 
 # ── Check status ──────────────────────────────────────────────
 
