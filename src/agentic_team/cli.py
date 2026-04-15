@@ -419,8 +419,7 @@ def standup(timeout: int) -> None:
 
     # Display the report
     if report_path.exists() and report_path.stat().st_size > 0:
-        click.echo()
-        click.echo(report_path.read_text())
+        _render_markdown(report_path.read_text())
     else:
         # Lead didn't write the file — extract from pane
         click.echo()
@@ -428,12 +427,22 @@ def standup(timeout: int) -> None:
         click.echo()
         try:
             output = tmux.capture_pane("lead", lines=80).rstrip()
-            # Show the non-empty lines
             for line in output.splitlines():
                 if line.strip():
                     click.echo(line)
         except Exception:
             click.echo("Could not capture lead pane.")
+
+
+def _render_markdown(text: str) -> None:
+    """Render markdown to the terminal using rich."""
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    console = Console()
+    console.print()
+    console.print(Markdown(text))
+    console.print()
 
 
 # ── team attach ──────────────────────────────────────────────────

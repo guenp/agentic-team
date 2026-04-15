@@ -49,6 +49,13 @@ class TmuxOrchestrator:
             "tmux", "set-option", "-t", self.session_name,
             "allow-rename", "off",
         ])
+        # Resize all windows when a client attaches, not just the active
+        # one.  Without this, worker windows keep the initial 220x50 size
+        # and TUI content renders off-screen in smaller terminals.
+        self._run([
+            "tmux", "set-option", "-t", self.session_name,
+            "window-size", "smallest",
+        ])
         # Start the team lead agent in the first window
         self.send_keys("lead", lead_command)
 
@@ -234,11 +241,22 @@ class TmuxOrchestrator:
         """Attach to the session, replacing the current process.
 
         If window is specified, select that window first.
+        Forces all windows to resize to the session size so TUI agents
+        render at the correct terminal width.
         """
         if window:
             self._run([
                 "tmux", "select-window",
                 "-t", f"{self.session_name}:{window}",
+            ], check=False)
+
+        # Force all windows to resize — they may still be at the
+        # initial 220x50 detached size from session creation.
+        for w in self.list_windows():
+            self._run([
+                "tmux", "resize-window",
+                "-t", f"{self.session_name}:{w.name}",
+                "-A",
             ], check=False)
 
         # Replace current process with tmux attach
