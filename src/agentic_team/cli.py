@@ -358,9 +358,10 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
             task = w.task if w else ""
             if len(task) > 60:
                 task = task[:57] + "..."
-            click.echo(f"{'─' * 40}")
-            click.echo(f"{matched} ({st}) — {task}")
-            click.echo(f"{'─' * 40}")
+            header = f" {matched} ({st}) — {task} "
+            click.echo(f"\n{'━' * 60}")
+            click.echo(f"┃{header}")
+            click.echo(f"{'━' * 60}")
 
         if raw:
             log_path = config.log_dir_for_team(team.name) / f"{matched}.log"
@@ -372,20 +373,35 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
                     click.echo(line)
         else:
             output = tmux.capture_pane(matched, lines=tail).rstrip("\n")
-            # Strip Claude Code UI chrome (status bar, prompt lines, rules)
+            # Strip Claude Code UI chrome and startup noise
             cleaned = []
             for line in output.splitlines():
                 stripped = line.strip()
-                # Skip horizontal rules (all ─), bare prompts, and status bar lines
                 if not stripped:
                     continue
-                if all(c == "─" for c in stripped):
+                # Horizontal rules (all ─ or ━)
+                if all(c in "─━" for c in stripped):
                     continue
-                if stripped == "❯" or stripped == "\u276f":
+                # Bare prompts
+                if stripped in ("❯", "\u276f"):
                     continue
+                # Status bar lines
                 if "esc to interrupt" in stripped:
                     continue
                 if stripped.startswith("⏵⏵") or stripped.startswith("\u23f5\u23f5"):
+                    continue
+                # Claude Code banner and startup
+                if stripped.startswith("▐▛") or stripped.startswith("▝▜") or stripped.startswith("▘▘"):
+                    continue
+                # Command echo (e.g. "❯ claude --permission-mode auto")
+                if stripped.startswith("❯ claude ") or stripped.startswith("claude --"):
+                    continue
+                if stripped.startswith("❯ codex ") or stripped.startswith("codex --"):
+                    continue
+                if stripped.startswith("❯ gemini ") or stripped.startswith("gemini --"):
+                    continue
+                # Claude Code version/model line
+                if "Claude Code v" in stripped or "Claude Enterprise" in stripped:
                     continue
                 cleaned.append(line)
             click.echo("\n".join(cleaned))
