@@ -94,6 +94,18 @@ team logs
 team attach
 ```
 
+Example `team status` output:
+
+```text
+Team: myproject (claude)
+
+  Worker          Status     Mode         Task
+  ──────────────  ─────────  ───────────  ──────────────────────────────
+  lead            active     interactive  —
+  fix-auth        active     interactive  Fix the login bug
+  add-tests       done       oneshot      Add regression tests
+```
+
 The lead agent receives a generated team-lead prompt when the provider supports system-prompt injection. Today that means Claude; Codex and Gemini leads run with provider-specific CLI flags only.
 
 ## How to use it: talk to the lead
