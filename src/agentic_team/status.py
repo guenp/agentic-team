@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,7 +14,12 @@ from .config import (
     load_workers,
     save_workers,
 )
-from .tmux import TmuxOrchestrator
+from .tmux import EXIT_SENTINEL, TmuxOrchestrator
+
+
+PROMPT_DELIVERY_TIMEOUT_SECONDS = 30
+_EXIT_RE = re.compile(re.escape(EXIT_SENTINEL) + r"(?P<code>\d+)")
+_COMMAND_NOT_FOUND_RE = re.compile(r"command not found", re.IGNORECASE)
 
 
 def get_team_status(config: TeamConfig) -> dict:
@@ -47,6 +54,8 @@ def get_team_status(config: TeamConfig) -> dict:
         pending_workers = {f.name for f in pending_dir.iterdir()}
 
     for worker in workers:
+        prompt_file = pending_dir / worker.name
+
         # Re-evaluate interactive workers previously marked "done" —
         # their pane persists and they may be working on a new task.
         if worker.mode == "interactive" and worker.status == "done":
@@ -59,27 +68,64 @@ def get_team_status(config: TeamConfig) -> dict:
                     worker.status = "waiting"
                     updated = True
                 elif not _is_interactive_idle(worker, tmux, state_dir):
-                    worker.status = "running"
-                    updated = True
+                    updated = _set_worker_running(worker) or updated
             continue
 
         if worker.status not in ("running", "waiting"):
             continue
 
+        in_windows = (
+            worker.tmux_window in windows
+            or worker.tmux_window in multi_joined
+        )
+
+        captured = None
+        if in_windows:
+            captured = tmux.capture_pane_safe(
+                worker.tmux_window,
+                lines=80,
+                state_dir=state_dir,
+                context=f"checking worker {worker.name}",
+            )
+
+        exit_code = _extract_exit_code(captured)
+        if worker.mode == "interactive" and exit_code is not None:
+            updated = _set_worker_error(
+                worker,
+                _describe_exit(captured or "", exit_code, interactive=True),
+                exit_code,
+            ) or updated
+            _cleanup_pending_prompt(prompt_file)
+            continue
+
+        if worker.mode == "oneshot" and exit_code is not None:
+            if exit_code == 0:
+                updated = _set_worker_done(worker, exit_code=exit_code) or updated
+                _try_extract_session_id(config, worker)
+            else:
+                updated = _set_worker_error(
+                    worker,
+                    _describe_exit(captured or "", exit_code),
+                    exit_code,
+                ) or updated
+            continue
+
         # Check if the tmux window still exists.
         # Skip this check for workers joined into a multi-pane layout —
         # their windows were merged into the host window.
-        if worker.tmux_window not in windows and worker.tmux_window not in multi_joined:
-            worker.status = "done"
-            updated = True
-            _try_extract_session_id(config, worker)
+        if not in_windows:
+            updated = _set_worker_error(
+                worker,
+                "tmux window disappeared while the worker was still running",
+            ) or updated
             continue
 
         # Check if the pane process has exited
         if tmux.is_pane_dead(worker.tmux_window, state_dir=state_dir):
-            worker.status = "done"
-            updated = True
-            _try_extract_session_id(config, worker)
+            updated = _set_worker_error(
+                worker,
+                "tmux pane exited unexpectedly while the worker was still running",
+            ) or updated
             continue
 
         # Check if the worker is blocked waiting for user confirmation
@@ -98,20 +144,27 @@ def get_team_status(config: TeamConfig) -> dict:
         # the agent command finishes. Detect completion by checking the
         # capture-pane output for a shell prompt or JSON result.
         if worker.mode == "oneshot" and _is_oneshot_done(config, worker, tmux, state_dir):
-            worker.status = "done"
-            updated = True
+            updated = _set_worker_done(worker, exit_code=0) or updated
             _try_extract_session_id(config, worker)
 
         # For interactive workers, the agent stays running but returns to
         # its input prompt (❯) after completing a task. Detect "idle" state.
         # Skip if the worker's initial prompt hasn't been delivered yet.
+        if worker.mode == "interactive" and prompt_file.exists():
+            if _prompt_delivery_timed_out(prompt_file):
+                updated = _set_worker_error(
+                    worker,
+                    f"initial prompt was not delivered within {PROMPT_DELIVERY_TIMEOUT_SECONDS}s",
+                ) or updated
+                _cleanup_pending_prompt(prompt_file)
+            continue
+
         if (
             worker.mode == "interactive"
             and worker.name not in pending_workers
             and _is_interactive_idle(worker, tmux, state_dir)
         ):
-            worker.status = "done"
-            updated = True
+            updated = _set_worker_done(worker) or updated
 
     if updated:
         save_workers(config.name, workers)
@@ -141,6 +194,8 @@ def get_team_status(config: TeamConfig) -> dict:
             "task": w.task,
             "source": getattr(w, "source", "cli"),
             "elapsed": elapsed,
+            "last_error": w.last_error,
+            "exit_code": w.exit_code,
         })
 
     return {
@@ -179,6 +234,7 @@ def format_status(status: dict) -> None:
     table.add_column("Status")
     table.add_column("Elapsed", justify="right", style="dim")
     table.add_column("Task")
+    table.add_column("Error", style="red")
 
     status_styles = {
         "running": "bold yellow",
@@ -203,12 +259,18 @@ def format_status(status: dict) -> None:
         task_col = Text()
         task_col.append(f"[{source}] ", style=source_styles.get(source, "dim"))
         task_col.append(task_text)
+        error_text = ""
+        if w.get("last_error"):
+            error_text = w["last_error"]
+            if w.get("exit_code") is not None:
+                error_text = f"{error_text} (exit {w['exit_code']})"
         table.add_row(
             w["name"],
             w["provider"],
             Text(w["status"], style=style),
             w["elapsed"],
             task_col,
+            error_text,
         )
 
     console.print(table)
@@ -226,9 +288,13 @@ def _is_oneshot_done(
     This avoids false positives from previous runs' output still visible
     in scrollback.
     """
-    try:
-        output = tmux.capture_pane(worker.tmux_window, lines=80, state_dir=state_dir)
-    except Exception:
+    output = tmux.capture_pane_safe(
+        worker.tmux_window,
+        lines=80,
+        state_dir=state_dir,
+        context=f"checking oneshot completion for {worker.name}",
+    )
+    if output is None:
         return False
 
     lines = output.splitlines()
@@ -255,6 +321,10 @@ def _is_oneshot_done(
 
     # Method 1: Check for claude JSON result after the last command
     if worker.provider == "claude" and '"type":"result"' in after_cmd:
+        return True
+
+    # Method 1b: Explicit exit sentinel from the wrapped shell command
+    if _extract_exit_code(after_cmd) == 0:
         return True
 
     # Method 2: Check for a shell prompt after command output
@@ -288,11 +358,13 @@ def _is_interactive_idle(
     - Codex: "Worked for" summary or idle prompt "›" visible
     - Gemini: "Type your message" idle prompt visible
     """
-    try:
-        raw = tmux.capture_pane(
-            worker.tmux_window, lines=30, state_dir=state_dir,
-        )
-    except Exception:
+    raw = tmux.capture_pane_safe(
+        worker.tmux_window,
+        lines=30,
+        state_dir=state_dir,
+        context=f"checking interactive idleness for {worker.name}",
+    )
+    if raw is None:
         return False
 
     # Strip trailing blank lines — TUI apps often pad the bottom of the
@@ -402,10 +474,13 @@ def _try_extract_session_id(config: TeamConfig, worker: WorkerState) -> None:
         return
 
     # Try capture-pane first (clean text, may be wrapped across lines)
-    try:
-        tmux = TmuxOrchestrator(config.tmux_session)
-        output = tmux.capture_pane(worker.tmux_window, lines=80)
-    except Exception:
+    tmux = TmuxOrchestrator(config.tmux_session)
+    output = tmux.capture_pane_safe(
+        worker.tmux_window,
+        lines=80,
+        context=f"extracting session id for {worker.name}",
+    )
+    if output is None:
         return
 
     # Find the last agent command and only search after it
@@ -417,9 +492,119 @@ def _try_extract_session_id(config: TeamConfig, worker: WorkerState) -> None:
             break
 
     # Join lines after the last command (no separators so wrapped UUIDs reassemble)
-    import re
     after = lines[last_cmd_idx + 1:] if last_cmd_idx >= 0 else lines
     flat = "".join(after)
     m = re.search(r'"session_id":"([a-f0-9-]+)"', flat)
     if m:
         worker.session_id = m.group(1)
+
+
+def _extract_exit_code(output: str | None) -> int | None:
+    """Extract the most recent wrapped shell exit sentinel from pane output."""
+    if not output:
+        return None
+    matches = list(_EXIT_RE.finditer(output))
+    if not matches:
+        return None
+    return int(matches[-1].group("code"))
+
+
+def _describe_exit(output: str, exit_code: int, interactive: bool = False) -> str:
+    """Turn an exit code and pane output into a concise persisted error."""
+    if _COMMAND_NOT_FOUND_RE.search(output) or exit_code == 127:
+        return "agent command not found on PATH"
+
+    lines = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(EXIT_SENTINEL):
+            continue
+        if _looks_like_shell_prompt(stripped):
+            continue
+        lines.append(stripped)
+
+    if lines:
+        tail = lines[-1]
+        if "error" in tail.lower() or interactive:
+            return tail
+
+    if interactive:
+        return f"interactive worker exited before accepting prompts (exit {exit_code})"
+    return f"worker exited with status {exit_code}"
+
+
+def _looks_like_shell_prompt(stripped: str) -> bool:
+    """Heuristic prompt detection for shell and TUI agent prompts."""
+    return (
+        "\u276f" in stripped
+        or stripped.endswith("$")
+        or stripped.endswith("%")
+        or stripped.endswith("#")
+    )
+
+
+def _prompt_delivery_timed_out(prompt_file: Path) -> bool:
+    """Return True once a queued prompt has aged past the delivery budget."""
+    try:
+        age_seconds = datetime.now(timezone.utc).timestamp() - prompt_file.stat().st_mtime
+    except OSError as exc:
+        warnings.warn(
+            f"Could not inspect pending prompt {prompt_file}: {exc}",
+            stacklevel=2,
+        )
+        return False
+    return age_seconds >= PROMPT_DELIVERY_TIMEOUT_SECONDS
+
+
+def _cleanup_pending_prompt(prompt_file: Path) -> None:
+    """Remove a stale pending prompt file after a worker has errored."""
+    try:
+        prompt_file.unlink(missing_ok=True)
+    except OSError as exc:
+        warnings.warn(
+            f"Could not remove pending prompt {prompt_file}: {exc}",
+            stacklevel=2,
+        )
+
+
+def _set_worker_running(worker: WorkerState) -> bool:
+    """Transition a worker back to running and clear stale failure state."""
+    changed = (
+        worker.status != "running"
+        or worker.last_error is not None
+        or worker.exit_code is not None
+    )
+    worker.status = "running"
+    worker.last_error = None
+    worker.exit_code = None
+    return changed
+
+
+def _set_worker_done(worker: WorkerState, exit_code: int | None = None) -> bool:
+    """Mark a worker done and clear any prior error detail."""
+    changed = (
+        worker.status != "done"
+        or worker.last_error is not None
+        or worker.exit_code != exit_code
+    )
+    worker.status = "done"
+    worker.last_error = None
+    worker.exit_code = exit_code
+    return changed
+
+
+def _set_worker_error(
+    worker: WorkerState, last_error: str, exit_code: int | None = None,
+) -> bool:
+    """Mark a worker as failed with persisted diagnostic detail."""
+    changed = (
+        worker.status != "error"
+        or worker.last_error != last_error
+        or worker.exit_code != exit_code
+    )
+    worker.status = "error"
+    worker.last_error = last_error
+    worker.exit_code = exit_code
+    return changed
