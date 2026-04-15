@@ -116,7 +116,26 @@ Show the status of all workers.
 team status
 ```
 
-Displays worker name, provider, mode, status (`running`/`done`), elapsed time, and task description.
+Displays worker name, provider, status (`running`/`done`), elapsed time, task source, and task description.
+
+| Option | Description |
+|--------|-------------|
+| `--verbose`, `-v` | Live tail of agent output. Press `q` to quit. |
+
+### `team wait`
+
+Block until all running workers are done.
+
+```bash
+team wait [--timeout 600] [--interval 15]
+```
+
+Polls internally and shows the status table, reprinting only when a worker's status changes. Uses a single command invocation instead of repeated `team status` calls — ideal for the team lead to avoid token waste.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout`, `-t` | `600` | Max seconds to wait |
+| `--interval`, `-i` | `15` | Seconds between polls |
 
 ### `team logs`
 
@@ -157,7 +176,7 @@ team stop-worker <name>
 
 ### `team clear`
 
-Remove completed workers from the status list. Useful after reviewing done workers to keep the status table clean.
+Remove completed workers from the status list and close their tmux windows. Also cleans up orphaned windows that are no longer tracked.
 
 ```bash
 team clear
