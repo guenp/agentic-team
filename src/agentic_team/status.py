@@ -220,7 +220,8 @@ def _is_interactive_idle(
     # bar is at the bottom of the pane. Old renders in scrollback may
     # still contain "esc to interrupt" from when the agent was working.
     tail = "\n".join(output.splitlines()[-5:])
-    if "esc to interrupt" in tail:
+    # Use a shorter prefix — the full text may be truncated by pane width
+    if "esc to inter" in tail:
         return False
 
     # The agent is not actively working. Confirm it actually did work

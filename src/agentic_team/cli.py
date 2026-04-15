@@ -372,7 +372,7 @@ _TOOL_PREFIXES = (
 
 # Lines to always filter from captured pane output
 _CHROME_PATTERNS = (
-    "esc to interrupt",
+    "esc to inter",
     "ctrl+o to expand",
     "shift+tab to cycle",
 )
