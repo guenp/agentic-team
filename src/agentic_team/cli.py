@@ -611,6 +611,31 @@ def spawn_worker(
     workdir = working_dir or team.working_dir
     if not Path(workdir).is_dir():
         raise click.ClickException(f"Working directory {workdir!r} does not exist.")
+
+    # Create git worktree for isolation when enabled
+    branch_name: str | None = None
+    worktree_path: str | None = None
+    if team.use_worktrees and not resume_session:
+        import subprocess
+
+        repo_root = Path(workdir).resolve()
+        branch_name = f"team/{team.name}/{worker_name}"
+        wt_path = repo_root / ".worktrees" / worker_name
+        worktree_path = str(wt_path)
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", str(wt_path), "-b", branch_name],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise click.ClickException(
+                f"Failed to create git worktree for worker {worker_name!r}: {exc.stderr.strip()}"
+            )
+        workdir = worktree_path
+
     session_log_dir = config.current_session_log_dir(team.name)
     if not session_log_dir:
         session_log_dir = config.create_session_log_dir(team.name)
@@ -634,6 +659,8 @@ def spawn_worker(
             team_name=team.name,
             working_dir=workdir,
             log_path=log_path,
+            branch_name=branch_name,
+            worktree_path=worktree_path,
         )
 
     # Spawn in tmux
@@ -656,6 +683,8 @@ def spawn_worker(
         tmux_window=worker_name,
         source=source,
         session_id=resume_session,
+        worktree_path=worktree_path,
+        branch_name=branch_name,
     )
 
     with ExitStack() as rollback:
@@ -1710,8 +1739,11 @@ def clear() -> None:
 
     Also cleans up orphaned tmux windows that are no longer tracked
     in the workers list (e.g. from a previous clear that didn't kill
-    the windows).
+    the windows). When worktree isolation is enabled, removes the
+    git worktrees for completed workers.
     """
+    import subprocess
+
     team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
     workers = config.load_workers(team.name)
@@ -1720,6 +1752,23 @@ def clear() -> None:
     done = [w for w in workers if w.status == "done"]
     for w in done:
         tmux.kill_window(w.tmux_window)
+
+    # Clean up git worktrees for done workers
+    worktrees_removed = 0
+    for w in done:
+        if w.worktree_path:
+            try:
+                subprocess.run(
+                    ["git", "worktree", "remove", w.worktree_path, "--force"],
+                    cwd=team.working_dir,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                worktrees_removed += 1
+            except subprocess.CalledProcessError:
+                # Worktree may already be removed or path invalid
+                pass
 
     remaining = [w for w in workers if w.status != "done"]
     running_names = {w.tmux_window for w in remaining} | {"lead"}
@@ -1739,6 +1788,8 @@ def clear() -> None:
     parts = []
     if done:
         parts.append(f"{len(done)} completed worker(s)")
+    if worktrees_removed:
+        parts.append(f"{worktrees_removed} worktree(s)")
     if orphaned:
         parts.append(f"{orphaned} orphaned window(s)")
     click.echo(f"Cleared {', '.join(parts)}. {len(remaining)} remaining.")

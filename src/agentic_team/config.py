@@ -40,7 +40,7 @@ class TeamConfig:
     model: str | None = None
     worker_mode: str = "interactive"  # default mode for workers
     permissions: str = "auto"  # "auto" | "default" | "dangerously-skip-permissions"
-    use_worktrees: bool = False
+    use_worktrees: bool = True
     working_dir: str = "."
     max_workers: int = 6
     recursion: int = 1
@@ -68,6 +68,8 @@ class WorkerState:
     source: str = "cli"  # "cli" | "file" | "lead"
     started_at: str = ""
     pid: int | None = None
+    worktree_path: str | None = None
+    branch_name: str | None = None
     last_error: str | None = None
     exit_code: int | None = None
 
