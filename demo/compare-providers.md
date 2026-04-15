@@ -1,6 +1,6 @@
 # Provider Comparison — Security audit
 
 ## .
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: claude, name: claude-audit)
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: codex, name: codex-audit)
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: gemini, name: gemini-audit)
+- [ ] Audit the codebase for command injection vulnerabilities in subprocess calls. Report findings with file paths and line numbers. (provider: claude, name: cmd-injection)
+- [ ] Audit the codebase for path traversal and unsafe file operations. Report findings with file paths and line numbers. (provider: claude, name: path-traversal)
+- [ ] Audit the codebase for unsafe deserialization and input validation issues. Report findings with file paths and line numbers. (provider: codex, name: input-validation)

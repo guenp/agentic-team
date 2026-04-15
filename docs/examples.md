@@ -14,9 +14,9 @@ Create `compare-providers.md`:
 # Provider Comparison — Security audit
 
 ## ~/repos/myproject
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: claude, name: claude-audit)
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: codex, name: codex-audit)
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: gemini, name: gemini-audit)
+- [ ] Audit the codebase for command injection vulnerabilities in subprocess calls. Report findings with file paths and line numbers. (provider: claude, name: cmd-injection)
+- [ ] Audit the codebase for path traversal and unsafe file operations. Report findings with file paths and line numbers. (provider: claude, name: path-traversal)
+- [ ] Audit the codebase for unsafe deserialization and input validation issues. Report findings with file paths and line numbers. (provider: codex, name: input-validation)
 ```
 
 ### Run it
@@ -32,9 +32,9 @@ team run compare-providers.md
 team status
 
 # Compare output side by side
-team logs claude-audit
-team logs codex-audit
-team logs gemini-audit
+team logs cmd-injection
+team logs path-traversal
+team logs input-validation
 ```
 
 ### Ask the lead to compare
@@ -42,21 +42,20 @@ team logs gemini-audit
 Once all workers are done, ask the team lead to synthesize:
 
 ```bash
-team "All three workers are done. Review their output with 'team logs claude-audit', \
-'team logs codex-audit', and 'team logs gemini-audit'. Compare the findings — \
-which audit was most thorough? Were there findings unique to one provider? \
-Write a consolidated security report to audit-report.md."
+team "All three workers are done. Review their output with 'team logs cmd-injection', \
+'team logs path-traversal', and 'team logs input-validation'. Compile the findings \
+into a consolidated security report and write it to audit-report.md."
 ```
 
 ### What to expect
 
-Each provider has different strengths:
+Each worker focuses on a different attack surface:
 
-- **Claude** tends to produce thorough implementations with detailed explanations and considers edge cases
-- **Codex** is fast and produces concise, functional code with minimal commentary
-- **Gemini** often provides alternative approaches and explains trade-offs
+- **cmd-injection** — Looks at `subprocess.run` calls for unsanitized input
+- **path-traversal** — Checks file operations for directory escape and symlink issues
+- **input-validation** — Reviews TOML deserialization and user-facing input handling
 
-The team lead reviews all three outputs and writes a comparison report, giving you a structured way to evaluate different AI approaches to the same problem.
+The team lead compiles all findings into a single consolidated report, so you get broader coverage than any one worker would provide alone.
 
 ---
 
