@@ -531,7 +531,6 @@ _CHROME_FILTERS = (
     "shift+tab",
     "Use /skills",
     "Type your message",
-    "% left",
 )
 
 
@@ -545,10 +544,24 @@ def _pane_tail(
 
     Strips blank lines, separator lines (───), and TUI chrome.
     """
+    import re
+
     try:
         raw = tmux.capture_pane(target, lines=30, state_dir=state_dir).rstrip()
     except Exception:
         return "(pane not available)"
+
+    # Extract token/budget info from the status bar before filtering it out.
+    # Claude: "86050 tokens"  Codex: "77% left"
+    status_info = ""
+    for raw_line in raw.splitlines():
+        m = re.search(r"(\d[\d,]+ tokens)", raw_line)
+        if m:
+            status_info = m.group(1)
+        m = re.search(r"(\d+% left)", raw_line)
+        if m:
+            status_info = m.group(1)
+
     lines = [
         l for l in raw.splitlines()
         if l.strip()
@@ -557,7 +570,10 @@ def _pane_tail(
         and not l.strip().startswith("▄")
         and not any(f in l for f in _CHROME_FILTERS)
     ]
-    return "\n".join(lines[-n:]) if lines else "(no output)"
+    result = "\n".join(lines[-n:]) if lines else "(no output)"
+    if status_info:
+        result += f"\n[dim]{status_info}[/dim]"
+    return result
 
 
 def _status_live(
