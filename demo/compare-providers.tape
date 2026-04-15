@@ -100,15 +100,15 @@ Sleep 3
 
 # ── Compare logs from all three providers ─────────────────────
 
-Type "team logs cmd-injection"
+Type "team logs claude-audit"
 Enter
 Sleep 4
 
-Type "team logs path-traversal"
+Type "team logs codex-audit"
 Enter
 Sleep 4
 
-Type "team logs input-validation"
+Type "team logs gemini-audit"
 Enter
 Sleep 4
 
