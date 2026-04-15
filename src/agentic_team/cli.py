@@ -359,7 +359,8 @@ not a full report. Write the file, then say "Standup written."\
 
 @app.command()
 @click.option("--timeout", default=120, help="Max seconds to wait for the report.")
-def standup(timeout: int) -> None:
+@click.option("--verbose", "-v", is_flag=True, help="Stream the lead agent's output live.")
+def standup(timeout: int, verbose: bool) -> None:
     """Ask the team lead for a standup report on all workers."""
     team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
@@ -378,50 +379,126 @@ def standup(timeout: int) -> None:
         team_name=team.name,
     )
     tmux.send_keys("lead", prompt)
-    click.echo("Asking lead for standup report...")
 
     import time
+
+    if verbose:
+        _standup_live(team, tmux, report_path, timeout)
+    else:
+        click.echo("Asking lead for standup report...")
+        _standup_poll(team, tmux, report_path, timeout)
+
+
+def _standup_done(report_path: Path) -> bool:
+    """Check if the standup report file has been written."""
+    return report_path.exists() and report_path.stat().st_size > 0
+
+
+def _lead_is_idle(tmux: TmuxOrchestrator, provider: str) -> bool:
+    """Check if the lead agent is idle (not actively processing)."""
+    try:
+        raw = tmux.capture_pane("lead", lines=30).rstrip()
+    except Exception:
+        return False
+    tail = "\n".join(raw.splitlines()[-10:])
+    if provider == "claude":
+        return "esc to inter" not in tail and len(
+            [l for l in raw.splitlines() if l.strip()]
+        ) > 5
+    return False
+
+
+def _standup_poll(
+    team: config.TeamConfig,
+    tmux: TmuxOrchestrator,
+    report_path: Path,
+    timeout: int,
+) -> None:
+    """Wait for the standup report by polling (default mode)."""
+    import time
+
     start = time.time()
-    lead_idle_count = 0
+    idle_count = 0
 
     while time.time() - start < timeout:
         time.sleep(3)
 
-        # Primary signal: report file written
-        if report_path.exists() and report_path.stat().st_size > 0:
-            # Give the agent a moment to finish writing
+        if _standup_done(report_path):
             time.sleep(1)
             break
 
-        # Secondary signal: lead went idle (finished processing)
-        try:
-            raw = tmux.capture_pane("lead", lines=30).rstrip()
-            tail = "\n".join(raw.splitlines()[-10:])
-            if team.provider == "claude":
-                idle = "esc to inter" not in tail and len(
-                    [l for l in raw.splitlines() if l.strip()]
-                ) > 5
-            else:
-                idle = False
-            if idle:
-                lead_idle_count += 1
-                # Require two consecutive idle checks to avoid transient gaps
-                if lead_idle_count >= 2:
-                    break
-            else:
-                lead_idle_count = 0
-        except Exception:
-            pass
+        if _lead_is_idle(tmux, team.provider):
+            idle_count += 1
+            if idle_count >= 2:
+                break
+        else:
+            idle_count = 0
 
         elapsed = int(time.time() - start)
         if elapsed % 15 == 0 and elapsed > 0:
             click.echo(f"  still waiting... ({elapsed}s)")
 
-    # Display the report
-    if report_path.exists() and report_path.stat().st_size > 0:
+    _show_standup_result(tmux, report_path)
+
+
+def _standup_live(
+    team: config.TeamConfig,
+    tmux: TmuxOrchestrator,
+    report_path: Path,
+    timeout: int,
+) -> None:
+    """Stream the lead agent's pane output live while waiting."""
+    import time
+
+    from rich.console import Console
+    from rich.live import Live
+    from rich.panel import Panel
+
+    console = Console()
+    start = time.time()
+    idle_count = 0
+
+    with Live(console=console, refresh_per_second=2, transient=True) as live:
+        while time.time() - start < timeout:
+            # Capture current pane state
+            try:
+                raw = tmux.capture_pane("lead", lines=40).rstrip()
+                lines = raw.splitlines()
+                # Trim leading blank lines
+                while lines and not lines[0].strip():
+                    lines.pop(0)
+                display = "\n".join(lines)
+            except Exception:
+                display = "(cannot capture pane)"
+
+            elapsed = int(time.time() - start)
+            live.update(Panel(
+                display,
+                title=f"[bold]Lead Agent[/bold] [dim]({elapsed}s)[/dim]",
+                border_style="blue",
+            ))
+
+            if _standup_done(report_path):
+                time.sleep(1)
+                break
+
+            if _lead_is_idle(tmux, team.provider):
+                idle_count += 1
+                if idle_count >= 2:
+                    break
+            else:
+                idle_count = 0
+
+            time.sleep(0.5)
+
+    _show_standup_result(tmux, report_path)
+
+
+def _show_standup_result(tmux: TmuxOrchestrator, report_path: Path) -> None:
+    """Display the standup report or fall back to pane capture."""
+    if _standup_done(report_path):
         _render_markdown(report_path.read_text())
     else:
-        # Lead didn't write the file — extract from pane
         click.echo()
         click.echo("(Lead didn't write the report file — showing pane output)")
         click.echo()
