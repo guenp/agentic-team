@@ -14,7 +14,7 @@ User ──> team CLI ──> tmux session
 
 ## Demo
 
-![agentic-team demo](../demo/demo.gif)
+![agentic-team demo](demo.gif)
 
 ## Features
 
