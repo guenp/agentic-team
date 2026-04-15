@@ -265,20 +265,25 @@ class TmuxOrchestrator:
             "bash", "-c", cmd,
         ])
 
-        # Split for each additional target
+        # Split for each additional target using -h (horizontal split
+        # = vertical divider) so panes sit side-by-side in a grid.
         for target in targets[1:]:
             cmd = self._watch_cmd(target)
             self._run([
                 "tmux", "split-window",
+                "-h",
                 "-t", f"{self.session_name}:{multi_window}",
                 "bash", "-c", cmd,
             ])
-            # Re-tile after each split to keep panes balanced
-            self._run([
-                "tmux", "select-layout",
-                "-t", f"{self.session_name}:{multi_window}",
-                "tiled",
-            ])
+
+        # Apply layout: even-horizontal for 2 panes (clean side-by-side),
+        # tiled for 3+ (automatic grid).
+        layout = "even-horizontal" if len(targets) == 2 else "tiled"
+        self._run([
+            "tmux", "select-layout",
+            "-t", f"{self.session_name}:{multi_window}",
+            layout,
+        ])
 
         # Attach to the multi window
         self.attach(multi_window)
@@ -286,18 +291,21 @@ class TmuxOrchestrator:
     def _watch_cmd(self, target: str) -> str:
         """Build a shell command that live-streams a pane's output.
 
-        Flicker-free refresh: captures to a variable, moves cursor home,
-        prints each line with erase-to-EOL, then clears below.
+        Flicker-free: cursor-home → overwrite → erase-below.
+        Each line is truncated *and* padded to the dashboard pane width
+        so overwriting is exact — no leftover chars, no wrapping.
+        Height is capped to the pane height so content always fits.
         """
         session_target = shlex.quote(f"{self.session_name}:{target}")
+        fit_script = Path(__file__).parent / "_pane_fit.py"
         return (
-            f"EL=$(printf '\\033[K'); tput clear; "
+            f"tput clear; "
             f"while true; do "
-            f"out=$(tmux capture-pane -t {session_target} -p -S -50); "
-            f"printf '\\033[H'; "
-            f"printf '\\033[1;36m=== {target} ===%s\\033[0m\\n' \"$EL\"; "
-            f"printf '%s\\n' \"$out\" "
-            f"| while IFS= read -r ln; do printf '%s%s\\n' \"$ln\" \"$EL\"; done; "
+            f"H=$(($(tput lines) - 1)); "
+            f"W=$(tput cols); "
+            f"printf '\\033[H\\033[1;36m=== {target} ===\\033[K\\033[0m\\n'; "
+            f"tmux capture-pane -t {session_target} -p -J "
+            f"| python3 {shlex.quote(str(fit_script))} \"$W\" \"$H\"; "
             f"printf '\\033[J'; "
             f"sleep 1; done"
         )
