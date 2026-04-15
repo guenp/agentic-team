@@ -108,17 +108,16 @@ class TmuxOrchestrator:
             prompt = prompt_file.read_text()
 
             # Check if the agent is ready by scanning the pane for known
-            # prompt indicators. Claude Code shows "❯" on its input line,
-            # but it may not be the very last line (status bar follows it).
+            # prompt indicators from each provider's startup output.
             try:
-                output = self.capture_pane(target, lines=15)
+                output = self.capture_pane(target, lines=30)
                 ready = any(
                     indicator in output
                     for indicator in (
-                        "\u276f",   # ❯ (Claude Code prompt)
-                        "Claude Code",  # Claude Code welcome banner
-                        "codex>",   # Codex prompt
-                        "gemini>",  # Gemini prompt
+                        "Claude Code",      # Claude Code welcome banner
+                        "OpenAI Codex",     # Codex welcome banner
+                        "Gemini CLI",       # Gemini CLI welcome banner
+                        "Type your message",  # Gemini input prompt
                     )
                 )
                 if ready:
