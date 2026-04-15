@@ -180,11 +180,11 @@ def build_worker_command(
     """Build the shell command to start a worker agent."""
     provider = get_provider(provider_name)
     parts: list[str] = [provider.cli_command]
-    parts.extend(worker_runtime_flags(
+    parts.extend(describe_provider_flags(
         provider_name,
-        mode=mode,
         model=model,
         permissions=permissions,
+        mode=mode,
     ))
 
     # System prompt for worker context
@@ -237,17 +237,3 @@ def lead_runtime_flags(config: TeamConfig) -> list[str]:
     )
 
 
-def worker_runtime_flags(
-    provider_name: str,
-    *,
-    mode: str,
-    model: str | None,
-    permissions: str,
-) -> list[str]:
-    """Return the provider/runtime flags used for a worker launch."""
-    return describe_provider_flags(
-        provider_name,
-        model=model,
-        permissions=permissions,
-        mode=mode,
-    )

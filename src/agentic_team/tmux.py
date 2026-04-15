@@ -315,7 +315,6 @@ class TmuxOrchestrator:
             "-l", text,
         ])
         if delay > 0:
-            import time
             time.sleep(delay)
         self._run([
             "tmux", "send-keys",
