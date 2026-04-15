@@ -241,41 +241,51 @@ def _is_interactive_idle(
     - Gemini: "Type your message" idle prompt visible
     """
     try:
-        output = tmux.capture_pane(
+        raw = tmux.capture_pane(
             worker.tmux_window, lines=30, state_dir=state_dir,
         )
     except Exception:
         return False
 
+    # Strip trailing blank lines — TUI apps often pad the bottom of the
+    # pane, which pushes status/prompt indicators out of the tail window.
+    output = raw.rstrip()
+
     if worker.provider == "claude":
         tail = "\n".join(output.splitlines()[-10:])
         if "esc to inter" in tail:
             return False
-        # Confirm the agent actually produced output.
-        if "\u23fa" in output or "⎿" in output:
+        # Not actively working. Confirm the agent has been active by
+        # checking for substantial content (excludes empty/startup panes).
+        # We can't rely on ⏺/⎿ markers — they scroll out of view for
+        # long responses. The ❯ prompt + no "esc to interrupt" is enough.
+        content_lines = [l for l in output.splitlines() if l.strip()]
+        if len(content_lines) > 5:
             return True
 
     elif worker.provider == "codex":
-        # Codex shows "Worked for Xm Ys" when a task completes.
-        if "Worked for" in output:
-            return True
         # If "Working (" is visible, the agent is actively processing.
         if "Working (" in output:
             return False
+        # "Worked for" summary means task completed.
+        if "Worked for" in output:
+            return True
+        # Idle: "›" prompt visible with no working indicator.
+        # The "›" line or "Use /skills" appears when Codex is waiting.
+        tail_lines = [l.strip() for l in output.splitlines() if l.strip()]
+        if tail_lines and any(
+            l.startswith("\u203a") or "Use /skills" in l
+            for l in tail_lines[-5:]
+        ):
+            return True
 
     elif worker.provider == "gemini":
-        # "Type your message" appears when idle, but also at startup
-        # before the first prompt. Require some output above the idle
-        # prompt to confirm the agent actually completed work.
+        # "Type your message" appears when idle. Guard against startup
+        # by requiring substantial pane content (agent produced output).
         tail = "\n".join(output.splitlines()[-10:])
         if "Type your message" in tail:
-            # Check for evidence of completed work above the prompt
-            above = output.split("Type your message")[0]
-            has_output = any(
-                indicator in above
-                for indicator in ("✓", "```", "Summary", "─")
-            )
-            if has_output:
+            content_lines = [l for l in output.splitlines() if l.strip()]
+            if len(content_lines) > 10:
                 return True
 
     return False
