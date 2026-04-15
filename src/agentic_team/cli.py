@@ -460,14 +460,11 @@ def _standup_live(
 
     with Live(console=console, refresh_per_second=2, transient=True) as live:
         while time.time() - start < timeout:
-            # Capture current pane state
+            # Show just the last few non-empty lines from the pane
             try:
-                raw = tmux.capture_pane("lead", lines=40).rstrip()
-                lines = raw.splitlines()
-                # Trim leading blank lines
-                while lines and not lines[0].strip():
-                    lines.pop(0)
-                display = "\n".join(lines)
+                raw = tmux.capture_pane("lead", lines=30).rstrip()
+                tail = [l for l in raw.splitlines() if l.strip()][-5:]
+                display = "\n".join(tail)
             except Exception:
                 display = "(cannot capture pane)"
 
