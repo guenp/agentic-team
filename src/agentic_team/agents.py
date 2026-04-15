@@ -17,9 +17,11 @@ tasks to worker agents that run in parallel.
 
 ## Available Commands (run via Bash)
 
-- `team spawn-worker --task "description" [--mode oneshot|interactive] [--provider claude|codex|gemini] [--name custom-name]`
-  Spawn a new worker agent. Use "interactive" (default) for tasks needing \
-back-and-forth, "oneshot" for fire-and-forget tasks.
+- `team spawn-worker --task "description" --name <short-name> [--mode oneshot|interactive] [--provider claude|codex|gemini]`
+  Spawn a new worker agent. Always provide --name with a short (1-2 word, \
+kebab-case) name that describes the task, e.g. "fix-auth", "add-tests", \
+"update-docs". Use "interactive" (default) for tasks needing back-and-forth, \
+"oneshot" for fire-and-forget tasks.
 
 - `team status`
   Check the status of all workers (running/done/error + elapsed time).

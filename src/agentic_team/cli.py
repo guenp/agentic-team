@@ -201,7 +201,7 @@ def spawn_worker(
 
     # Generate name
     existing_names = [w.name for w in workers]
-    worker_name = name or names.next_name(existing_names)
+    worker_name = name or names.name_from_task(task, existing_names)
 
     # Build command
     worker_cmd = agents.build_worker_command(
@@ -606,7 +606,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
         else:
             # New task — spawn a fresh worker
             existing_names = [w.name for w in workers]
-            worker_name = entry.name or names.next_name(existing_names)
+            worker_name = entry.name or names.name_from_task(entry.task, existing_names)
 
             worker_cmd = agents.build_worker_command(
                 provider_name=prov,
