@@ -28,7 +28,7 @@ Show
 
 # ── Show the task file ─────────────────────────────────────────
 
-Type "cat examples/compare-providers.md"
+Type "cat demo/compare-providers.md"
 Enter
 Sleep 3
 
@@ -40,7 +40,7 @@ Sleep 3
 
 # ── Run the multi-provider tasks ──────────────────────────────
 
-Type "team run examples/compare-providers.md"
+Type "team run demo/compare-providers.md"
 Enter
 Sleep 12
 
