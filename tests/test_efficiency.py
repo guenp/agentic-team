@@ -78,7 +78,9 @@ class SnapshotCachingTests(unittest.TestCase):
 
 
 class StatusTransitionTests(unittest.TestCase):
-    def test_done_interactive_workers_are_not_repolled(self) -> None:
+    def test_done_interactive_uses_snapshot_not_subprocess(self) -> None:
+        """Re-evaluating done interactive workers should use the windows dict
+        for pane_dead (from the snapshot) rather than calling is_pane_dead."""
         team = config.TeamConfig(name="demo", provider="codex")
         worker = config.WorkerState(
             name="worker",
@@ -105,7 +107,11 @@ class StatusTransitionTests(unittest.TestCase):
                 return []
 
             def is_pane_dead(self, *args, **kwargs):
-                raise AssertionError("done interactive workers should not be re-polled")
+                raise AssertionError("should use windows dict, not is_pane_dead method")
+
+            def capture_pane(self, target, lines=50, state_dir=None, snapshot=None):
+                # Return output indicating Codex has finished
+                return "Worked for 30 seconds\n\u203a "
 
         with tempfile.TemporaryDirectory() as tmpdir:
             state_root = Path(tmpdir)

@@ -64,12 +64,25 @@ def get_team_status(
                 worker.tmux_window in windows
                 or worker.tmux_window in multi_joined
             )
-            if in_windows and not tmux.is_pane_dead(worker.tmux_window, state_dir=state_dir):
-                if _is_waiting_for_input(worker, tmux, state_dir):
-                    worker.status = "waiting"
-                    updated = True
-                elif not _is_interactive_idle(worker, tmux, state_dir):
-                    updated = _set_worker_running(worker) or updated
+            if in_windows:
+                if worker.tmux_window in windows:
+                    pane_dead = windows[worker.tmux_window].pane_dead
+                else:
+                    pane_dead = tmux.is_pane_dead(
+                        worker.tmux_window,
+                        state_dir=state_dir,
+                        snapshot=snapshot,
+                    )
+                if not pane_dead:
+                    if _is_waiting_for_input(
+                        worker, tmux, state_dir, snapshot=snapshot,
+                    ):
+                        worker.status = "waiting"
+                        updated = True
+                    elif not _is_interactive_idle(
+                        worker, tmux, state_dir, snapshot=snapshot,
+                    ):
+                        updated = _set_worker_running(worker) or updated
             continue
 
         if worker.status not in ("running", "waiting"):
@@ -138,7 +151,7 @@ def get_team_status(
             continue
 
         # Check if the worker is blocked waiting for user confirmation
-        if _is_waiting_for_input(worker, tmux, state_dir):
+        if _is_waiting_for_input(worker, tmux, state_dir, snapshot=snapshot):
             if worker.status != "waiting":
                 worker.status = "waiting"
                 updated = True
@@ -449,6 +462,7 @@ def _is_interactive_idle(
 def _is_waiting_for_input(
     worker: WorkerState, tmux: TmuxOrchestrator,
     state_dir: Path | None = None,
+    snapshot: TmuxSnapshot | None = None,
 ) -> bool:
     """Detect if a worker is blocked waiting for user confirmation.
 
@@ -460,6 +474,7 @@ def _is_waiting_for_input(
     try:
         raw = tmux.capture_pane(
             worker.tmux_window, lines=20, state_dir=state_dir,
+            snapshot=snapshot,
         )
     except Exception:
         return False
