@@ -60,7 +60,7 @@ def get_team_status(config: TeamConfig) -> dict:
                     updated = True
             continue
 
-        if worker.status != "running":
+        if worker.status not in ("running", "waiting"):
             continue
 
         # Check if the tmux window still exists.
@@ -78,6 +78,18 @@ def get_team_status(config: TeamConfig) -> dict:
             updated = True
             _try_extract_session_id(config, worker)
             continue
+
+        # Check if the worker is blocked waiting for user confirmation
+        if _is_waiting_for_input(worker, tmux, state_dir):
+            if worker.status != "waiting":
+                worker.status = "waiting"
+                updated = True
+            continue
+
+        # If previously waiting but no longer blocked, resume running
+        if worker.status == "waiting":
+            worker.status = "running"
+            updated = True
 
         # For oneshot workers, the pane stays alive (drops to shell) after
         # the agent command finishes. Detect completion by checking the
@@ -167,6 +179,7 @@ def format_status(status: dict) -> None:
 
     status_styles = {
         "running": "bold yellow",
+        "waiting": "bold magenta",
         "done": "bold green",
         "error": "bold red",
         "pending": "dim",
@@ -319,6 +332,54 @@ def _is_interactive_idle(
             content_lines = [l for l in output.splitlines() if l.strip()]
             if len(content_lines) > 10:
                 return True
+
+    return False
+
+
+def _is_waiting_for_input(
+    worker: WorkerState, tmux: TmuxOrchestrator,
+    state_dir: Path | None = None,
+) -> bool:
+    """Detect if a worker is blocked waiting for user confirmation.
+
+    Provider-specific signals:
+    - Claude: "approve" / "deny" / "(Y/n)" / "(y/N)" in the tail
+    - Codex: "Would you like to run" / "Yes, proceed" / "Press enter to confirm"
+    - Gemini: "Do you want to" / "[Y/n]" prompts
+    """
+    try:
+        raw = tmux.capture_pane(
+            worker.tmux_window, lines=20, state_dir=state_dir,
+        )
+    except Exception:
+        return False
+
+    tail = raw.rstrip()
+    tail_lines = tail.splitlines()[-15:]
+    tail_text = "\n".join(tail_lines)
+
+    if worker.provider == "claude":
+        # Claude Code shows "approve" / "deny" or "(Y/n)" permission prompts
+        # But NOT when "esc to inter" is visible (that means it's working)
+        if "esc to inter" in tail_text:
+            return False
+        indicators = ("(Y/n)", "(y/N)", "approve", "deny")
+        return any(ind in tail_text for ind in indicators)
+
+    elif worker.provider == "codex":
+        # Codex shows a numbered menu with "Yes, proceed" or
+        # "Would you like to run" / "Press enter to confirm"
+        indicators = (
+            "Would you like to run",
+            "Yes, proceed",
+            "Press enter to confirm",
+            "esc to cancel",
+        )
+        return any(ind in tail_text for ind in indicators)
+
+    elif worker.provider == "gemini":
+        indicators = ("Do you want to", "[Y/n]", "[y/N]")
+        return any(ind in tail_text for ind in indicators)
 
     return False
 

@@ -405,7 +405,8 @@ def wait(timeout: int, interval: int) -> None:
     while True:
         st = status.get_team_status(team)
         workers = st["workers"]
-        running = [w for w in workers if w["status"] == "running"]
+        active = [w for w in workers if w["status"] in ("running", "waiting")]
+        waiting = [w for w in workers if w["status"] == "waiting"]
         cur_statuses = {w["name"]: w["status"] for w in workers}
 
         # Print table on first poll or when any worker's status changed
@@ -413,14 +414,17 @@ def wait(timeout: int, interval: int) -> None:
             elapsed = int(time.time() - start)
             click.echo(f"\n--- {elapsed}s elapsed ---")
             status.format_status(st)
+            if waiting:
+                names = ", ".join(w["name"] for w in waiting)
+                click.echo(f"⚠ {len(waiting)} worker(s) waiting for input: {names}")
             prev_statuses = cur_statuses
 
-        if not running:
+        if not active:
             break
 
         elapsed = int(time.time() - start)
         if elapsed >= timeout:
-            click.echo(f"\nTimed out after {timeout}s. {len(running)} worker(s) still running.")
+            click.echo(f"\nTimed out after {timeout}s. {len(active)} worker(s) still active.")
             return
 
         time.sleep(interval)
