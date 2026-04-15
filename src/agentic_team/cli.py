@@ -388,13 +388,17 @@ def status_cmd(worker_name: str | None, verbose: bool) -> None:
 @click.option("--timeout", "-t", default=600, help="Max seconds to wait (default 600).")
 @click.option("--interval", "-i", default=15, help="Seconds between polls (default 15).")
 def wait(timeout: int, interval: int) -> None:
-    """Block until all running workers are done.
+    """Block until all running workers are done. Press q to exit early.
 
     Shows the status table initially, then reprints it only when a
     worker's status changes. Uses one tool call in the lead's context
     instead of repeated status checks.
     """
+    import select
+    import sys
+    import termios
     import time
+    import tty
 
     team = _get_team()
     start = time.time()
@@ -402,36 +406,57 @@ def wait(timeout: int, interval: int) -> None:
     # Track status per worker to detect changes
     prev_statuses: dict[str, str] = {}
 
-    while True:
-        st = status.get_team_status(team)
-        workers = st["workers"]
-        active = [w for w in workers if w["status"] in ("running", "waiting")]
-        waiting = [w for w in workers if w["status"] == "waiting"]
-        cur_statuses = {w["name"]: w["status"] for w in workers}
+    # Set up non-blocking key reads if stdin is a terminal
+    is_tty = sys.stdin.isatty()
+    old_settings = None
+    if is_tty:
+        old_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
 
-        # Print table on first poll or when any worker's status changed
-        if cur_statuses != prev_statuses:
+    try:
+        while True:
+            st = status.get_team_status(team)
+            workers = st["workers"]
+            active = [w for w in workers if w["status"] in ("running", "waiting")]
+            waiting = [w for w in workers if w["status"] == "waiting"]
+            cur_statuses = {w["name"]: w["status"] for w in workers}
+
+            # Print table on first poll or when any worker's status changed
+            if cur_statuses != prev_statuses:
+                elapsed = int(time.time() - start)
+                click.echo(f"\n--- {elapsed}s elapsed (q to quit) ---")
+                status.format_status(st)
+                if waiting:
+                    names = ", ".join(w["name"] for w in waiting)
+                    click.echo(f"⚠ {len(waiting)} worker(s) waiting for input: {names}")
+                prev_statuses = cur_statuses
+
+            if not active:
+                break
+
             elapsed = int(time.time() - start)
-            click.echo(f"\n--- {elapsed}s elapsed ---")
-            status.format_status(st)
-            if waiting:
-                names = ", ".join(w["name"] for w in waiting)
-                click.echo(f"⚠ {len(waiting)} worker(s) waiting for input: {names}")
-            prev_statuses = cur_statuses
+            if elapsed >= timeout:
+                click.echo(f"\nTimed out after {timeout}s. {len(active)} worker(s) still active.")
+                return
 
-        if not active:
-            break
+            # Sleep in small increments, checking for 'q' keypress
+            deadline = time.time() + interval
+            while time.time() < deadline:
+                if is_tty and select.select([sys.stdin], [], [], 0.5)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch in ("q", "Q"):
+                        elapsed = int(time.time() - start)
+                        click.echo(f"\nExited after {elapsed}s. {len(active)} worker(s) still active.")
+                        return
+                else:
+                    time.sleep(0.5)
 
         elapsed = int(time.time() - start)
-        if elapsed >= timeout:
-            click.echo(f"\nTimed out after {timeout}s. {len(active)} worker(s) still active.")
-            return
-
-        time.sleep(interval)
-
-    elapsed = int(time.time() - start)
-    done = [w for w in workers if w["status"] == "done"]
-    click.echo(f"\nAll {len(done)} worker(s) done in {elapsed}s.")
+        done = [w for w in workers if w["status"] == "done"]
+        click.echo(f"\nAll {len(done)} worker(s) done in {elapsed}s.")
+    finally:
+        if old_settings is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 
 # ── team standup ────────────────────────────────────────────────
