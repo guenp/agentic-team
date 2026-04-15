@@ -39,7 +39,27 @@ def get_team_status(config: TeamConfig) -> dict:
     if delivered:
         updated = True
 
+    # Check which workers still have pending (undelivered) prompts —
+    # they haven't started working yet, so skip idle detection for them.
+    pending_dir = state_dir / "pending_prompts"
+    pending_workers: set[str] = set()
+    if pending_dir.exists():
+        pending_workers = {f.name for f in pending_dir.iterdir()}
+
     for worker in workers:
+        # Re-evaluate interactive workers previously marked "done" —
+        # their pane persists and they may be working on a new task.
+        if worker.mode == "interactive" and worker.status == "done":
+            in_windows = (
+                worker.tmux_window in windows
+                or worker.tmux_window in multi_joined
+            )
+            if in_windows and not tmux.is_pane_dead(worker.tmux_window, state_dir=state_dir):
+                if not _is_interactive_idle(worker, tmux, state_dir):
+                    worker.status = "running"
+                    updated = True
+            continue
+
         if worker.status != "running":
             continue
 
@@ -69,7 +89,12 @@ def get_team_status(config: TeamConfig) -> dict:
 
         # For interactive workers, the agent stays running but returns to
         # its input prompt (❯) after completing a task. Detect "idle" state.
-        if worker.mode == "interactive" and _is_interactive_idle(worker, tmux, state_dir):
+        # Skip if the worker's initial prompt hasn't been delivered yet.
+        if (
+            worker.mode == "interactive"
+            and worker.name not in pending_workers
+            and _is_interactive_idle(worker, tmux, state_dir)
+        ):
             worker.status = "done"
             updated = True
 
@@ -231,22 +256,27 @@ def _is_interactive_idle(
             return True
 
     elif worker.provider == "codex":
-        # Codex shows "Worked for Xm Ys" when done, or an idle prompt
-        # "›" with a status line showing model/usage info.
+        # Codex shows "Worked for Xm Ys" when a task completes.
         if "Worked for" in output:
             return True
-        # Idle prompt: last non-empty lines show "›" and model info
-        tail_lines = [l.strip() for l in output.splitlines() if l.strip()]
-        if tail_lines:
-            last = tail_lines[-1]
-            # Status line like "gpt-5.4 xhigh · 79% left"
-            if "% left" in last or "left ·" in last:
-                return True
+        # If "Working (" is visible, the agent is actively processing.
+        if "Working (" in output:
+            return False
 
     elif worker.provider == "gemini":
+        # "Type your message" appears when idle, but also at startup
+        # before the first prompt. Require some output above the idle
+        # prompt to confirm the agent actually completed work.
         tail = "\n".join(output.splitlines()[-10:])
         if "Type your message" in tail:
-            return True
+            # Check for evidence of completed work above the prompt
+            above = output.split("Type your message")[0]
+            has_output = any(
+                indicator in above
+                for indicator in ("✓", "```", "Summary", "─")
+            )
+            if has_output:
+                return True
 
     return False
 
