@@ -1103,22 +1103,42 @@ def sync(task_file: str) -> None:
 
 @app.command()
 def clear() -> None:
-    """Remove completed workers and close their tmux windows."""
-    team = _get_team()
-    workers = config.load_workers(team.name)
-    done = [w for w in workers if w.status == "done"]
-    remaining = [w for w in workers if w.status != "done"]
-    if not done:
-        click.echo("No completed workers to clear.")
-        return
+    """Remove completed workers and close their tmux windows.
 
-    # Kill the tmux windows for done workers
+    Also cleans up orphaned tmux windows that are no longer tracked
+    in the workers list (e.g. from a previous clear that didn't kill
+    the windows).
+    """
+    team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
+    workers = config.load_workers(team.name)
+
+    # Kill tmux windows for done workers
+    done = [w for w in workers if w.status == "done"]
     for w in done:
         tmux.kill_window(w.tmux_window)
 
+    remaining = [w for w in workers if w.status != "done"]
+    running_names = {w.tmux_window for w in remaining} | {"lead"}
+
+    # Kill orphaned tmux windows not tracked in workers list
+    orphaned = 0
+    for win in tmux.list_windows():
+        if win.name not in running_names:
+            tmux.kill_window(win.name)
+            orphaned += 1
+
+    if not done and not orphaned:
+        click.echo("Nothing to clear.")
+        return
+
     config.save_workers(team.name, remaining)
-    click.echo(f"Cleared {len(done)} completed worker(s). {len(remaining)} remaining.")
+    parts = []
+    if done:
+        parts.append(f"{len(done)} completed worker(s)")
+    if orphaned:
+        parts.append(f"{orphaned} orphaned window(s)")
+    click.echo(f"Cleared {', '.join(parts)}. {len(remaining)} remaining.")
 
 
 # ── team stop ────────────────────────────────────────────────────
