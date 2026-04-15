@@ -26,6 +26,7 @@ class ProviderConfig:
     system_prompt_file_flag: str | None = None
     output_format_json: bool = False
     ready_indicators: list[str] = field(default_factory=list)
+    worktree_flag: str | None = None  # CLI flag for native worktree isolation
     # Built-in logging: extra CLI args and env vars for capturing output
     log_args_interactive: list[str] = field(default_factory=list)
     log_args_oneshot: list[str] = field(default_factory=list)
@@ -64,6 +65,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         system_prompt_file_flag="--append-system-prompt-file",
         output_format_json=True,
         ready_indicators=["Claude Code"],
+        worktree_flag="--worktree",
         log_args_interactive=["--verbose"],
         log_args_oneshot=["--verbose"],
     ),
@@ -98,6 +100,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         system_prompt_file_flag=None,
         output_format_json=False,
         ready_indicators=["Gemini CLI", "Type your message"],
+        worktree_flag="--worktree",
         log_args_interactive=["--debug"],
         log_args_oneshot=["--debug"],
     ),

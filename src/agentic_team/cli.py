@@ -612,29 +612,41 @@ def spawn_worker(
     if not Path(workdir).is_dir():
         raise click.ClickException(f"Working directory {workdir!r} does not exist.")
 
-    # Create git worktree for isolation when enabled
+    # Worktree isolation: use native provider flag when available,
+    # fall back to manual git worktree for providers without support.
     branch_name: str | None = None
     worktree_path: str | None = None
+    worktree_name: str | None = None  # for native --worktree flag
+    uses_manual_worktree = False
     if team.use_worktrees and not resume_session:
-        import subprocess
-
-        repo_root = Path(workdir).resolve()
+        from .models import get_provider as _get_provider
+        prov = _get_provider(provider)
         branch_name = f"team/{team.name}/{worker_name}"
-        wt_path = repo_root / ".worktrees" / worker_name
-        worktree_path = str(wt_path)
-        try:
-            subprocess.run(
-                ["git", "worktree", "add", str(wt_path), "-b", branch_name],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            raise click.ClickException(
-                f"Failed to create git worktree for worker {worker_name!r}: {exc.stderr.strip()}"
-            )
-        workdir = worktree_path
+
+        if prov.worktree_flag:
+            # Provider handles worktree creation natively
+            worktree_name = worker_name
+        else:
+            # Manual fallback (e.g. codex)
+            import subprocess
+
+            repo_root = Path(workdir).resolve()
+            wt_path = repo_root / ".worktrees" / worker_name
+            worktree_path = str(wt_path)
+            uses_manual_worktree = True
+            try:
+                subprocess.run(
+                    ["git", "worktree", "add", str(wt_path), "-b", branch_name],
+                    cwd=str(repo_root),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                raise click.ClickException(
+                    f"Failed to create git worktree for worker {worker_name!r}: {exc.stderr.strip()}"
+                )
+            workdir = worktree_path
 
     session_log_dir = config.current_session_log_dir(team.name)
     if not session_log_dir:
@@ -660,7 +672,7 @@ def spawn_worker(
             working_dir=workdir,
             log_path=log_path,
             branch_name=branch_name,
-            worktree_path=worktree_path,
+            worktree_name=worktree_name,
         )
 
     # Spawn in tmux
@@ -683,7 +695,7 @@ def spawn_worker(
         tmux_window=worker_name,
         source=source,
         session_id=resume_session,
-        worktree_path=worktree_path,
+        worktree_path=worktree_path if uses_manual_worktree else None,
         branch_name=branch_name,
     )
 
