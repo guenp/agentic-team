@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -62,7 +61,12 @@ def _get_team(ctx: click.Context | None = None) -> config.TeamConfig:
             return config.load_team(name)
         except FileNotFoundError:
             raise click.ClickException(f"Team {name!r} not found.")
-    return config.get_active_team()
+    try:
+        return config.get_active_team()
+    except RuntimeError:
+        raise click.ClickException(
+            "No active team. Run 'team init <name>' to create one."
+        )
 
 
 # ── team init ────────────────────────────────────────────────────
@@ -131,19 +135,20 @@ def init(
     config.set_active_team(name)
     config.save_workers(name, [])
 
+    # Create a timestamped session log directory
+    session_log_dir = config.create_session_log_dir(name)
+
     # Write system prompt file and build lead command
     prompt_file = agents.write_system_prompt_file(team)
-    lead_cmd = agents.build_lead_command(team, prompt_file)
+    lead_cmd = agents.build_lead_command(
+        team, prompt_file, log_path=session_log_dir / "lead.log",
+    )
 
     # Create tmux session and start the lead
     tmux = TmuxOrchestrator(team.tmux_session)
     if tmux.session_exists():
         tmux.kill_session()
     tmux.create_session(working_dir, lead_cmd)
-
-    # Start logging the lead
-    log_dir = config.log_dir_for_team(name)
-    tmux.start_logging("lead", log_dir / "lead.log")
 
     click.echo(f"Team {name!r} initialized.")
     click.echo(f"  Provider: {provider}" + (f" ({model})" if model else ""))
@@ -226,8 +231,13 @@ def spawn_worker(
     existing_names = [w.name for w in workers]
     worker_name = name or names.name_from_task(task, existing_names)
 
-    # Build command
+    # Build command with log path
     workdir = working_dir or team.working_dir
+    session_log_dir = config.current_session_log_dir(team.name)
+    if not session_log_dir:
+        session_log_dir = config.create_session_log_dir(team.name)
+    log_path = session_log_dir / f"{worker_name}.log"
+
     worker_cmd = agents.build_worker_command(
         provider_name=provider,
         task=task,
@@ -236,14 +246,15 @@ def spawn_worker(
         permissions=team.permissions,
         team_name=team.name,
         working_dir=workdir,
+        log_path=log_path,
     )
 
     # Spawn in tmux
     tmux = TmuxOrchestrator(team.tmux_session)
-    log_path = config.log_dir_for_team(team.name) / f"{worker_name}.log"
+    state_dir = config.STATE_DIR / team.name
     # For interactive workers, send the task as an initial prompt after the agent starts
     initial_prompt = task if mode == "interactive" else None
-    tmux.spawn_worker(worker_name, worker_cmd, workdir, log_path, initial_prompt=initial_prompt)
+    tmux.spawn_worker(worker_name, worker_cmd, workdir, state_dir, initial_prompt=initial_prompt)
 
     # Record state
     worker = config.WorkerState(
@@ -287,11 +298,16 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
         click.echo(f"Sent to {matched}.")
     elif worker.mode == "oneshot" and worker.session_id:
         # Resume via --resume flag
+        session_log_dir = config.current_session_log_dir(team.name)
+        if not session_log_dir:
+            session_log_dir = config.create_session_log_dir(team.name)
+        log_path = session_log_dir / f"{matched}.log"
         resume_cmd = agents.build_resume_command(
-            worker.provider, worker.session_id, text
+            worker.provider, worker.session_id, text,
+            log_path=log_path,
         )
-        log_path = config.log_dir_for_team(team.name) / f"{matched}.log"
-        tmux.spawn_worker(matched, resume_cmd, team.working_dir, log_path)
+        state_dir = config.STATE_DIR / team.name
+        tmux.spawn_worker(matched, resume_cmd, team.working_dir, state_dir)
         worker.status = "running"
         config.save_workers(team.name, workers)
         click.echo(f"Resumed {matched} with session {worker.session_id[:8]}...")
@@ -352,103 +368,16 @@ def attach(window: str | None, multi: bool) -> None:
 
 # ── team logs ────────────────────────────────────────────────────
 
-# Regex to strip ANSI escape sequences from pipe-pane log output
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][\x20-\x7e]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Z]")
-
-
-def _strip_ansi(text: str) -> str:
-    """Remove ANSI escape codes and carriage returns from raw log text."""
-    text = _ANSI_RE.sub("", text)
-    # Remove carriage returns (terminal overwrites)
-    text = text.replace("\r", "")
-    return text
-
-
-# Tool call prefixes in Claude Code output (⏺ Bash(...), etc.)
-_TOOL_PREFIXES = (
-    "Bash(", "Read(", "Write(", "Edit(", "Grep(", "Glob(", "Search(",
-    "Searched ", "WebFetch(", "WebSearch(", "Agent(",
-)
-
-# Lines to always filter from captured pane output
-_CHROME_PATTERNS = (
-    "esc to inter",
-    "ctrl+o to expand",
-    "shift+tab to cycle",
-)
-
-
-def _extract_last_response(output: str) -> list[str]:
-    """Extract the last agent response from captured pane output.
-
-    Finds the last ⏺ marker that starts a text response (not a tool
-    call), and returns only lines from that point onward — with UI
-    chrome, prompts, and tool-call blocks filtered out.
-    """
-    lines = output.splitlines()
-
-    # Find the start of the last text response (⏺ not followed by a tool name)
-    last_response = -1
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if s.startswith("\u23fa") or s.startswith("⏺"):
-            after = s.lstrip("\u23fa⏺ ")
-            if not any(after.startswith(p) for p in _TOOL_PREFIXES):
-                last_response = i
-
-    if last_response < 0:
-        # No ⏺ response found — fall back to showing everything after
-        # the last ❯ prompt line.
-        for i in range(len(lines) - 1, -1, -1):
-            s = lines[i].strip()
-            if s.startswith("❯") and len(s) > 1:
-                last_response = i + 1
-                break
-
-    if last_response < 0:
-        last_response = 0
-
-    cleaned = []
-    for line in lines[last_response:]:
-        s = line.strip()
-        if not s:
-            continue
-        # Skip UI chrome
-        if any(p in s for p in _CHROME_PATTERNS):
-            continue
-        # Skip horizontal rules (all box-drawing chars)
-        if all(c in "─━" for c in s):
-            continue
-        # Skip bare prompts
-        if s in ("❯", "\u276f"):
-            continue
-        # Skip auto-mode indicator
-        if s.startswith("⏵⏵") or s.startswith("\u23f5\u23f5"):
-            continue
-        # Skip subsequent ❯ prompt echoes (task was re-sent)
-        if s.startswith("❯"):
-            continue
-        # Skip tool call blocks (⏺ Bash(...), ⎿ result lines)
-        if s.startswith("\u23fa") or s.startswith("⏺"):
-            after = s.lstrip("\u23fa⏺ ")
-            if any(after.startswith(p) for p in _TOOL_PREFIXES):
-                continue
-        if s.startswith("⎿"):
-            continue
-        # Skip "Read N file", "Searched for N pattern" tool summaries
-        if re.match(r"(Read|Searched for|Wrote|Edited) \d+", s):
-            continue
-        cleaned.append(line)
-    return cleaned
-
 
 @app.command()
 @click.argument("worker_name", required=False)
 @click.option("--tail", "-n", default=50, help="Number of lines to show.")
-@click.option("--raw", is_flag=True, help="Show unfiltered log output (with escape codes).")
 @click.option("--all", "-a", "show_all", is_flag=True, help="Show logs for all workers.")
-def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
-    """View worker output from pipe-pane log files.
+def logs(worker_name: str | None, tail: int, show_all: bool) -> None:
+    """View worker logs from the current session.
+
+    Logs are written by each agent CLI's built-in logging (--verbose,
+    RUST_LOG, --debug) to a timestamped session directory.
 
     With no arguments or --all, shows logs for every worker.
     With a name, shows logs for that specific worker.
@@ -473,6 +402,8 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
         matched = names.match_name(t, all_names) or t
         resolved.append(matched)
 
+    session_log_dir = config.current_session_log_dir(team.name)
+
     for i, matched in enumerate(resolved):
         w = next((w for w in workers if w.name == matched), None)
         st = w.status if w else "?"
@@ -489,19 +420,12 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
         )
         click.echo(click.style(f"{'━' * 60}", fg="bright_black"))
 
-        log_path = config.log_dir_for_team(team.name) / f"{matched}.log"
-        if not log_path.exists():
+        log_path = session_log_dir / f"{matched}.log" if session_log_dir else None
+        if not log_path or not log_path.exists():
             click.echo("  (no log file)")
-        elif raw:
+        else:
             lines = log_path.read_text().splitlines()
             for line in lines[-tail:]:
-                click.echo(line)
-        else:
-            # Read log, strip ANSI escapes, then extract the last response
-            raw_text = log_path.read_text()
-            clean_text = _strip_ansi(raw_text)
-            cleaned = _extract_last_response(clean_text)
-            for line in cleaned[-tail:]:
                 click.echo(line)
 
         if i < len(resolved) - 1:
@@ -674,6 +598,10 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
         if existing_worker and existing_worker.status == "done":
             # Re-run: send the task to the existing worker
             worker_name = existing_worker.name
+            session_log_dir = config.current_session_log_dir(team.name)
+            if not session_log_dir:
+                session_log_dir = config.create_session_log_dir(team.name)
+            log_path = session_log_dir / f"{worker_name}.log"
 
             if existing_worker.mode == "interactive":
                 # Interactive agent is still running — just send the task as input
@@ -682,6 +610,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
                 # Oneshot with session ID — resume with context
                 resume_cmd = agents.build_resume_command(
                     prov, existing_worker.session_id, entry.task,
+                    log_path=log_path,
                 )
                 tmux.send_keys(worker_name, resume_cmd)
             else:
@@ -692,6 +621,9 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
                     mode=mode,
                     model=model,
                     permissions=team.permissions,
+                    team_name=team.name,
+                    working_dir=workdir,
+                    log_path=log_path,
                 )
                 tmux.send_keys(worker_name, worker_cmd)
 
@@ -703,6 +635,11 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
             existing_names = [w.name for w in workers]
             worker_name = entry.name or names.name_from_task(entry.task, existing_names)
 
+            session_log_dir = config.current_session_log_dir(team.name)
+            if not session_log_dir:
+                session_log_dir = config.create_session_log_dir(team.name)
+            log_path = session_log_dir / f"{worker_name}.log"
+
             worker_cmd = agents.build_worker_command(
                 provider_name=prov,
                 task=entry.task,
@@ -711,11 +648,12 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
                 permissions=team.permissions,
                 team_name=team.name,
                 working_dir=workdir,
+                log_path=log_path,
             )
 
-            log_path = config.log_dir_for_team(team.name) / f"{worker_name}.log"
+            state_dir = config.STATE_DIR / team.name
             initial_prompt = entry.task if mode == "interactive" else None
-            tmux.spawn_worker(worker_name, worker_cmd, workdir, log_path, initial_prompt=initial_prompt)
+            tmux.spawn_worker(worker_name, worker_cmd, workdir, state_dir, initial_prompt=initial_prompt)
 
             worker = config.WorkerState(
                 name=worker_name,
@@ -738,12 +676,12 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
         click.echo("\nWaiting for agents to start...")
         for _ in range(10):
             time.sleep(1)
-            log_dir = config.log_dir_for_team(team.name)
-            delivered = tmux.deliver_pending_prompts(log_dir)
+            run_state_dir = config.STATE_DIR / team.name
+            delivered = tmux.deliver_pending_prompts(run_state_dir)
             if delivered:
                 click.echo(f"  Delivered prompts to: {', '.join(delivered)}")
             # Check if all pending prompts are delivered
-            pending_dir = log_dir / "pending_prompts"
+            pending_dir = run_state_dir / "pending_prompts"
             if not pending_dir.exists() or not list(pending_dir.iterdir()):
                 break
 

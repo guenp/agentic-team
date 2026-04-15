@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,7 +10,6 @@ from .config import (
     TeamConfig,
     WorkerState,
     load_workers,
-    log_dir_for_team,
     save_workers,
 )
 from .tmux import TmuxOrchestrator
@@ -38,8 +35,7 @@ def get_team_status(config: TeamConfig) -> dict:
         multi_joined = set(multi_file.read_text().strip().splitlines())
 
     # Deliver any pending prompts to interactive workers that are now ready
-    log_dir = log_dir_for_team(config.name)
-    delivered = tmux.deliver_pending_prompts(log_dir)
+    delivered = tmux.deliver_pending_prompts(state_dir)
     if delivered:
         updated = True
 
@@ -202,31 +198,6 @@ def _is_oneshot_done(
 
     return False
 
-
-_ANSI_RE = re.compile(
-    r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][\x20-\x7e]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Z]"
-)
-
-
-def _read_log_tail(worker_name: str, state_dir: Path | None, size: int = 8192) -> str | None:
-    """Read and clean the tail of a worker's pipe-pane log file."""
-    if not state_dir:
-        return None
-    team_name = state_dir.name
-    log_path = log_dir_for_team(team_name) / f"{worker_name}.log"
-    if not log_path.exists():
-        return None
-    try:
-        with open(log_path, "rb") as f:
-            f.seek(0, 2)
-            file_size = f.tell()
-            if file_size < 1024:
-                return None  # Too small — agent probably hasn't started
-            f.seek(max(0, file_size - size))
-            raw = f.read().decode("utf-8", errors="replace")
-    except OSError:
-        return None
-    return _ANSI_RE.sub("", raw).replace("\r", "")
 
 
 def _is_interactive_idle(

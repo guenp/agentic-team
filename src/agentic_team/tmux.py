@@ -80,19 +80,20 @@ class TmuxOrchestrator:
         window_name: str,
         command: str,
         working_dir: str,
-        log_path: Path,
+        state_dir: Path,
         initial_prompt: str | None = None,
     ) -> None:
-        """Create a window, start logging, run the command, and optionally
-        send an initial prompt after the agent starts."""
+        """Create a window, run the command, and optionally send an
+        initial prompt after the agent starts.
+
+        Logging is handled by the agent CLI's built-in flags (--verbose,
+        RUST_LOG, --debug) with stderr/stdout redirected in the command
+        string itself — no pipe-pane needed.
+        """
         self.create_window(window_name, working_dir)
-        self.start_logging(window_name, log_path)
         self.send_keys(window_name, command)
         if initial_prompt:
-            # Store the prompt to be sent once the agent is ready.
-            # We write it to a file and have a helper send it after a delay,
-            # since the agent needs time to start up before accepting input.
-            self._queue_prompt(window_name, initial_prompt, log_path.parent)
+            self._queue_prompt(window_name, initial_prompt, state_dir)
 
     def _queue_prompt(self, target: str, prompt: str, state_dir: Path) -> None:
         """Write a pending prompt file for an interactive worker.
@@ -188,24 +189,6 @@ class TmuxOrchestrator:
             "-S", f"-{lines}",
         ])
         return result.stdout
-
-    # ── Logging ──────────────────────────────────────────────────
-
-    def start_logging(self, target: str, log_path: Path) -> None:
-        """Pipe pane output to a log file."""
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._run([
-            "tmux", "pipe-pane",
-            "-t", f"{self.session_name}:{target}",
-            "-o",
-            f"cat >> {shlex.quote(str(log_path))}",
-        ])
-
-    def stop_logging(self, target: str) -> None:
-        self._run([
-            "tmux", "pipe-pane",
-            "-t", f"{self.session_name}:{target}",
-        ])
 
     # ── Monitoring ───────────────────────────────────────────────
 

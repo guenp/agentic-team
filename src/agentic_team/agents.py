@@ -94,9 +94,48 @@ def write_system_prompt_file(config: TeamConfig) -> Path:
 # ── Command builders ─────────────────────────────────────────────
 
 
+def _build_command_with_logging(
+    parts: list[str],
+    provider_name: str,
+    mode: str,
+    log_path: Path | None,
+) -> str:
+    """Build a shell command string with native CLI logging.
+
+    Interactive: stderr redirected to log (TUI stays on stdout).
+    Oneshot: both stdout and stderr redirected to log.
+    Environment variables for providers that use them (e.g. RUST_LOG).
+    """
+    provider = get_provider(provider_name)
+
+    # Add provider-specific logging flags
+    if mode == "oneshot":
+        parts.extend(provider.log_args_oneshot)
+    else:
+        parts.extend(provider.log_args_interactive)
+
+    cmd = shlex.join(parts)
+
+    # Prepend env vars if needed
+    if provider.log_env:
+        env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in provider.log_env.items())
+        cmd = f"{env_prefix} {cmd}"
+
+    # Append output redirection
+    if log_path:
+        quoted = shlex.quote(str(log_path))
+        if mode == "oneshot":
+            cmd = f"{cmd} > {quoted} 2>&1"
+        else:
+            cmd = f"{cmd} 2>> {quoted}"
+
+    return cmd
+
+
 def build_lead_command(
     config: TeamConfig,
     system_prompt_file: Path,
+    log_path: Path | None = None,
 ) -> str:
     """Build the shell command to start the team lead agent (interactive)."""
     provider = get_provider(config.provider)
@@ -118,7 +157,7 @@ def build_lead_command(
         prompt = build_team_lead_system_prompt(config)
         parts.extend([provider.system_prompt_flag, prompt])
 
-    return shlex.join(parts)
+    return _build_command_with_logging(parts, config.provider, "interactive", log_path)
 
 
 def build_worker_command(
@@ -129,6 +168,7 @@ def build_worker_command(
     permissions: str = "auto",
     team_name: str = "",
     working_dir: str = "",
+    log_path: Path | None = None,
 ) -> str:
     """Build the shell command to start a worker agent."""
     provider = get_provider(provider_name)
@@ -155,13 +195,14 @@ def build_worker_command(
     if mode == "oneshot":
         parts.append(task)
 
-    return shlex.join(parts)
+    return _build_command_with_logging(parts, provider_name, mode, log_path)
 
 
 def build_resume_command(
     provider_name: str,
     session_id: str,
     prompt: str,
+    log_path: Path | None = None,
 ) -> str:
     """Build a command to resume a prior agent session with a follow-up."""
     provider = get_provider(provider_name)
@@ -172,4 +213,4 @@ def build_resume_command(
     parts.extend(provider.oneshot_args)
     parts.extend([provider.resume_flag, session_id])
     parts.append(prompt)
-    return shlex.join(parts)
+    return _build_command_with_logging(parts, provider_name, "oneshot", log_path)

@@ -176,3 +176,30 @@ def log_dir_for_team(team_name: str) -> Path:
     d = LOGS_DIR / team_name
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def create_session_log_dir(team_name: str) -> Path:
+    """Create a timestamped session log directory.
+
+    Returns a path like ``~/.agentic-team/logs/<team>/20260415-003621/``.
+    Also writes a ``current`` symlink for easy access.
+    """
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    session_dir = LOGS_DIR / team_name / ts
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    # Symlink "current" → this session for quick lookup
+    current = LOGS_DIR / team_name / "current"
+    if current.is_symlink() or current.exists():
+        current.unlink()
+    current.symlink_to(session_dir)
+
+    return session_dir
+
+
+def current_session_log_dir(team_name: str) -> Path | None:
+    """Return the current session log directory, or None."""
+    current = LOGS_DIR / team_name / "current"
+    if current.is_symlink():
+        return current.resolve()
+    return None

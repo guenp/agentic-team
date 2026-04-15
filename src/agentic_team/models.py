@@ -18,6 +18,10 @@ class ProviderConfig:
     system_prompt_flag: str | None = None
     system_prompt_file_flag: str | None = None
     output_format_json: bool = False
+    # Built-in logging: extra CLI args and env vars for capturing output
+    log_args_interactive: list[str] = field(default_factory=list)
+    log_args_oneshot: list[str] = field(default_factory=list)
+    log_env: dict[str, str] = field(default_factory=dict)
 
 
 PROVIDERS: dict[str, ProviderConfig] = {
@@ -26,11 +30,13 @@ PROVIDERS: dict[str, ProviderConfig] = {
         cli_command="claude",
         models=["opus", "sonnet", "haiku"],
         interactive_args=[],
-        oneshot_args=["--print", "--output-format", "json"],
+        oneshot_args=["--print", "--output-format", "stream-json"],
         resume_flag="--resume",
         system_prompt_flag="--append-system-prompt",
         system_prompt_file_flag="--append-system-prompt-file",
         output_format_json=True,
+        log_args_interactive=["--verbose"],
+        log_args_oneshot=["--verbose"],
     ),
     "codex": ProviderConfig(
         name="codex",
@@ -42,6 +48,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         system_prompt_flag=None,
         system_prompt_file_flag=None,
         output_format_json=False,
+        log_env={"RUST_LOG": "info", "RUST_LOG_FORMAT": "json"},
     ),
     "gemini": ProviderConfig(
         name="gemini",
@@ -53,6 +60,8 @@ PROVIDERS: dict[str, ProviderConfig] = {
         system_prompt_flag=None,
         system_prompt_file_flag=None,
         output_format_json=False,
+        log_args_interactive=["--debug"],
+        log_args_oneshot=["--debug"],
     ),
 }
 
