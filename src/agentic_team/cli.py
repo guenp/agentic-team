@@ -329,6 +329,113 @@ def status_cmd() -> None:
     click.echo(status.format_status(st))
 
 
+# ── team standup ────────────────────────────────────────────────
+
+
+STANDUP_PROMPT = """\
+Check on all workers and write a standup report. Do these steps:
+
+1. Run `team status` to see current worker states.
+2. Run `team logs <name>` for each worker to review their output.
+3. Write a standup report to the file path below.
+
+Report file: {report_path}
+
+Use EXACTLY this format (markdown):
+
+```
+# Standup — {team_name}
+
+## <worker-name> — done | running | error
+**Task:** <one-line task description>
+**Result:** <1-2 sentences: what was accomplished, key findings, or what failed>
+**Output:** <where to find the full result — a PR URL, file path, or `team logs <name>`>
+```
+
+Include a section for every worker. Be concise — this is a status summary, \
+not a full report. Write the file, then say "Standup written."\
+"""
+
+
+@app.command()
+@click.option("--timeout", default=120, help="Max seconds to wait for the report.")
+def standup(timeout: int) -> None:
+    """Ask the team lead for a standup report on all workers."""
+    team = _get_team()
+    tmux = TmuxOrchestrator(team.tmux_session)
+
+    if not tmux.session_exists():
+        raise click.ClickException(
+            f"tmux session {team.tmux_session!r} not found. Run 'team init' first."
+        )
+
+    state_dir = config.STATE_DIR / team.name
+    report_path = state_dir / "standup.md"
+    report_path.unlink(missing_ok=True)
+
+    prompt = STANDUP_PROMPT.format(
+        report_path=report_path,
+        team_name=team.name,
+    )
+    tmux.send_keys("lead", prompt)
+    click.echo("Asking lead for standup report...")
+
+    import time
+    start = time.time()
+    lead_idle_count = 0
+
+    while time.time() - start < timeout:
+        time.sleep(3)
+
+        # Primary signal: report file written
+        if report_path.exists() and report_path.stat().st_size > 0:
+            # Give the agent a moment to finish writing
+            time.sleep(1)
+            break
+
+        # Secondary signal: lead went idle (finished processing)
+        try:
+            raw = tmux.capture_pane("lead", lines=30).rstrip()
+            tail = "\n".join(raw.splitlines()[-10:])
+            if team.provider == "claude":
+                idle = "esc to inter" not in tail and len(
+                    [l for l in raw.splitlines() if l.strip()]
+                ) > 5
+            else:
+                idle = False
+            if idle:
+                lead_idle_count += 1
+                # Require two consecutive idle checks to avoid transient gaps
+                if lead_idle_count >= 2:
+                    break
+            else:
+                lead_idle_count = 0
+        except Exception:
+            pass
+
+        elapsed = int(time.time() - start)
+        if elapsed % 15 == 0 and elapsed > 0:
+            click.echo(f"  still waiting... ({elapsed}s)")
+
+    # Display the report
+    if report_path.exists() and report_path.stat().st_size > 0:
+        click.echo()
+        click.echo(report_path.read_text())
+    else:
+        # Lead didn't write the file — extract from pane
+        click.echo()
+        click.echo("(Lead didn't write the report file — showing pane output)")
+        click.echo()
+        try:
+            output = tmux.capture_pane("lead", lines=80).rstrip()
+            # Show the non-empty lines
+            for line in output.splitlines():
+                if line.strip():
+                    click.echo(line)
+        except Exception:
+            click.echo("Could not capture lead pane.")
+
+
 # ── team attach ──────────────────────────────────────────────────
 
 
