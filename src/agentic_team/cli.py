@@ -463,7 +463,13 @@ def _standup_live(
             # Show just the last few non-empty lines from the pane
             try:
                 raw = tmux.capture_pane("lead", lines=30).rstrip()
-                tail = [l for l in raw.splitlines() if l.strip()][-5:]
+                tail = [
+                    l for l in raw.splitlines()
+                    if l.strip() and not l.strip().startswith("─")
+                    and "esc to inter" not in l
+                    and "auto mode" not in l
+                    and "shift+tab" not in l
+                ][-5:]
                 display = "\n".join(tail)
             except Exception:
                 display = "(cannot capture pane)"
