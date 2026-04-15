@@ -6,13 +6,13 @@
   Orchestrate teams of AI coding agents working in parallel inside tmux sessions.
 </p>
 
-A **team lead** agent runs interactively and delegates tasks to **worker** agents (Claude, Codex, Gemini) that execute in their own tmux windows. Workers can run in oneshot or interactive mode, each with independent working directories, providers, and models.
+A **team lead** agent runs interactively and delegates tasks to **worker** agents (Claude, Codex, Gemini) in separate tmux windows. Workers can run in `interactive` or `oneshot` mode, with per-worker provider, model, and working-directory overrides.
 
-```
+```text
 User ──> team CLI ──> tmux session
-                       ├── window 0: Team Lead (interactive)
-                       ├── window 1: worker "fix-auth"
-                       ├── window 2: worker "add-tests"
+                       ├── window 0: lead
+                       ├── window 1: fix-auth
+                       ├── window 2: add-tests
                        └── ...
 ```
 
@@ -36,11 +36,13 @@ cd agentic-team
 uv sync
 ```
 
-You'll also need at least one agent CLI installed:
+You also need at least one provider CLI installed and already authenticated:
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
-- [Codex](https://github.com/openai/codex) (`codex`)
-- [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
+- `claude`
+- `codex`
+- `gemini`
+
+`agentic-team` does not install or log in those CLIs for you. See [docs/providers.md](docs/providers.md) for the exact flags, resume support, system-prompt behavior, permission handling, and provider-specific caveats.
 
 ## 5-minute first run
 
@@ -81,16 +83,29 @@ team init myproject --working-dir ~/repos/myproject
 # or choose explicitly
 team init myproject --provider claude --working-dir ~/repos/myproject
 
-# Send a task to the team lead
+# Send a task to the lead
 team "fix the auth bug and add tests for the login flow"
 
-# Or attach to the tmux session to interact directly
+# Inspect progress
+team status
+team logs
+
+# Attach to the tmux session
 team attach
 ```
 
-The team lead agent receives a system prompt that teaches it to spawn and manage workers via the `team` CLI. It will break down your request and delegate subtasks automatically.
+The lead agent receives a generated team-lead prompt when the provider supports system-prompt injection. Today that means Claude; Codex and Gemini leads run with provider-specific CLI flags only.
 
-## Commands
+## Command quick reference
+
+Global options:
+
+```text
+team [--version] [-T TEAM] COMMAND [ARGS]...
+TEAM_NAME=<team> team COMMAND [ARGS]...
+```
+
+`-T/--team` and `TEAM_NAME` select a specific team instead of the active team.
 
 ### Team lifecycle
 
@@ -99,127 +114,127 @@ The team lead agent receives a system prompt that teaches it to spawn and manage
 team doctor [--provider claude|codex|gemini]
 
 # Initialize a new team
-team init <name> [--provider claude|codex|gemini] [--model <model>]
-                 [--working-dir <path>] [--max-workers 6]
-                 [--worker-mode oneshot|interactive]
-                 [--permissions auto|default|dangerously-skip-permissions]
+team init NAME [-p claude|codex|gemini] [-m MODEL]
+               [--worker-mode oneshot|interactive]
+               [--permissions auto|default|dangerously-skip-permissions]
+               [--max-workers INTEGER] [-C DIRECTORY]
 
-# Stop a team and kill its tmux session
-team stop [<name>]
-
-# List all teams
 team list
+team stop [NAME]
 ```
 
-### Interacting with the lead
+### Lead interaction
 
 ```bash
-# Send a prompt to the team lead (two equivalent forms)
-team "your prompt here"
-team send "your prompt here"
-
-# Attach to the tmux session
-team attach [--window <name>]
-
-# Tiled dashboard showing all workers side by side
-team attach --multi
+team "PROMPT..."
+team send PROMPT...
+team attach [-w WINDOW] [-m]
+team standup [--timeout INTEGER] [-v]
 ```
 
-### Managing workers
+### Worker management
 
 ```bash
-# Spawn a worker manually
-team spawn-worker --task "description" [--mode oneshot|interactive]
-                  [--provider claude|codex|gemini] [--model <model>]
-                  [--name custom-name] [--working-dir <path>]
-                  [--resume-session <session-id>]
+team spawn-worker -t TASK [--mode oneshot|interactive]
+                  [--provider claude|codex|gemini] [--model MODEL]
+                  [-n NAME] [-C DIRECTORY] [-r SESSION_ID]
 
-# Check status of all workers
-team status
-
-# View worker output
-team logs [<name>] [--all] [--tail 50] [--raw]
-
-# Send a message to a running interactive worker
-team send-to-worker <name> "message"
-
-# Resume a completed worker with a follow-up
-team resume <name> "follow-up prompt"
-
-# Stop a specific worker
-team stop-worker <name>
+team status [WORKER_NAME] [-v]
+team logs [WORKER_NAME] [-n TAIL] [-a]
+team send-to-worker WORKER_NAME MESSAGE...
+team resume WORKER_NAME PROMPT...
+team stop-worker WORKER_NAME
+team wait [-t TIMEOUT] [-i INTERVAL]
+team clear
 ```
 
 ### Task files
 
-Define tasks in a markdown file with checkbox syntax:
+```bash
+team run TASK_FILE [-l LIMIT] [--dry-run] [--rerun]
+team sync TASK_FILE
+```
+
+The full command reference is in [docs/commands.md](docs/commands.md).
+
+## Task files
+
+Task files are markdown checklists. Headings set a working-directory context, and trailing `(key: value)` overrides customize individual tasks.
 
 ```markdown
 ## ~/repos/backend
 - [ ] Fix the login bug
-- [ ] Add tests for the auth module (provider: codex, mode: oneshot)
-
-## ~/repos/frontend
-- [ ] Update the landing page (name: landing)
+- [ ] Add regression tests (provider: codex, mode: oneshot)
+- [ ] Update docs screenshots (dir: ~/repos/docs-site, name: docs-shots)
 ```
-
-Headings set the working directory. Inline `(key: value)` overrides configure provider, mode, model, or name per task.
 
 ```bash
-# Spawn workers for all unchecked tasks
 team run tasks.md
-
-# Preview what would be spawned
-team run tasks.md --dry-run
-
-# Re-run completed tasks
-team run tasks.md --rerun
-
-# Sync task file checkboxes from worker status
 team sync tasks.md
+team run tasks.md --rerun
 ```
 
-## Worker modes
+Supported inline keys today are:
 
-- **Interactive** (default): The agent starts a persistent session and receives the task via `send-keys`. Supports follow-up messages and stays alive between tasks. Best for most workflows.
-- **Oneshot**: The agent runs a single prompt and exits. The session ID is extracted from Claude's JSON output for later resumption via `team resume`.
+- `provider`
+- `mode`
+- `model`
+- `name`
+- `working_dir`
+- `dir`
 
-## Worker names
+The full parser and writeback rules are in [docs/task-files.md](docs/task-files.md).
 
-Workers are named automatically from their task description: a task like "fix the login bug" becomes `fix-login`. If names collide, a numeric suffix is added (`fix-login-2`). You can also set a custom name with `--name` or the `(name: ...)` task file override. Commands that accept a worker name support prefix matching -- `team logs fix` resolves to `fix-login`.
+## Managing multiple teams
+
+```bash
+team list
+team -T other-team status
+TEAM_NAME=other-team team logs lead
+```
+
+`team init` makes the new team active. `-T` and `TEAM_NAME` let you inspect another team without changing the active symlink. Full details are in [docs/multiple-teams.md](docs/multiple-teams.md).
 
 ## How it works
 
-1. `team init` creates a detached tmux session with the team lead in window 0.
-2. The lead agent receives a system prompt listing available `team` CLI commands.
-3. When the lead (or user) runs `team spawn-worker`, a new tmux window is created for the worker with logging via `pipe-pane`.
-4. `team status` polls worker liveness by checking tmux pane state, detecting shell prompts (oneshot), or monitoring Claude Code's status bar (interactive).
-5. State is persisted in TOML files under `~/.agentic-team/`.
+1. `team init` saves a team config, creates `~/.agentic-team/logs/<team>/<timestamp>/`, and starts the lead in tmux session `team-<name>`.
+2. `team spawn-worker` or `team run` builds provider-specific commands from [`src/agentic_team/models.py`](src/agentic_team/models.py) and [`src/agentic_team/agents.py`](src/agentic_team/agents.py).
+3. New interactive workers receive their first prompt only after `capture-pane` shows a ready screen; that queued prompt lives under `~/.agentic-team/state/<team>/pending_prompts/`.
+4. `team status` refreshes worker state by checking tmux panes, provider-specific idle signals, and Claude oneshot session IDs.
+5. `team logs` reads the current session log file first, then falls back to tmux pane capture when the file is empty or unavailable.
 
-### State directory layout
+## Runtime layout
 
-```
+```text
 ~/.agentic-team/
-├── teams/          # Team configs (TOML)
+├── teams/
 │   └── myproject.toml
-├── state/          # Worker state
+├── state/
 │   └── myproject/
-│       └── workers.toml
-├── logs/           # Worker logs
+│       ├── workers.toml
+│       ├── pending_prompts/
+│       ├── multi_targets
+│       └── standup.md
+├── logs/
 │   └── myproject/
-│       ├── lead.log
-│       ├── fix-auth.log
-│       └── add-tests.log
-└── active          # Symlink to active team's state dir
+│       ├── 20260415-003621/
+│       │   ├── lead.log
+│       │   ├── fix-auth.log
+│       │   └── add-tests.log
+│       └── current -> 20260415-003621
+└── active -> state/myproject
 ```
 
-## Supported providers
+## Further reading
 
-| Provider | CLI | Interactive | Oneshot | Resume |
-|----------|-----|------------|---------|--------|
-| Claude   | `claude` | `--verbose` | `--print --verbose --output-format json` | `--resume <id>` |
-| Codex    | `codex` | *(default)* | `--quiet` | -- |
-| Gemini   | `gemini` | *(default)* | `--prompt` | `--resume <id>` |
+- [docs/getting-started.md](docs/getting-started.md)
+- [docs/providers.md](docs/providers.md)
+- [docs/multiple-teams.md](docs/multiple-teams.md)
+- [docs/commands.md](docs/commands.md)
+- [docs/task-files.md](docs/task-files.md)
+- [docs/examples.md](docs/examples.md)
+- [docs/operations.md](docs/operations.md)
+- [docs/architecture.md](docs/architecture.md)
 
 ## License
 

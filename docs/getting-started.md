@@ -3,20 +3,20 @@
 ## Prerequisites
 
 - **Python 3.13+**
-- **tmux** -- install via your package manager:
+- **tmux**
 
     ```bash
     # macOS
     brew install tmux
 
-    # Ubuntu/Debian
+    # Ubuntu / Debian
     sudo apt install tmux
     ```
 
-- At least one agent CLI:
-    - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
-    - [Codex](https://github.com/openai/codex) (`codex`)
-    - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
+- At least one supported provider CLI on `PATH`: `claude`, `codex`, or `gemini`
+- Provider authentication completed outside `agentic-team`
+
+`agentic-team` does not install or log in provider CLIs for you. See [Providers](providers.md) for the exact binaries and behavior differences.
 
 ## Install
 
@@ -32,47 +32,100 @@ cd agentic-team
 uv sync
 ```
 
-## Your first team
+## Verify your environment
 
-Initialize a team, specifying the working directory for your project:
+Before creating a team, confirm that tmux and your chosen provider are ready:
+
+```bash
+team doctor --provider claude
+```
+
+`team doctor` checks that tmux is installed, the provider CLI is on `PATH`, and authentication is valid. If you already have an active team it also verifies the lead session is running.
+
+## Start your first team
 
 ```bash
 team init myproject --provider claude --working-dir ~/repos/myproject
 ```
 
-This creates a detached tmux session (`team-myproject`) with a team lead agent running in window 0. The lead receives a system prompt that teaches it how to spawn and manage workers.
+If exactly one provider is installed and authenticated, `--provider` can be omitted and `team init` will auto-detect it.
 
-Send the lead a task:
+This does four things:
+
+1. saves `myproject` under `~/.agentic-team/teams/`
+2. makes it the active team
+3. creates a timestamped log directory under `~/.agentic-team/logs/myproject/`
+4. starts the lead agent in tmux session `team-myproject`
+
+Send the lead a prompt:
 
 ```bash
 team "fix the auth bug and add tests for the login flow"
 ```
 
-Or attach to the session to interact directly:
+Or attach directly:
 
 ```bash
 team attach
 ```
 
-## Checking progress
+## Check progress
 
 ```bash
-# Status overview
 team status
-
-# View worker output
 team logs
-
-# View a specific worker
-team logs fix-auth
-
-# Tiled dashboard of all workers
+team standup
 team attach --multi
 ```
 
-## Stopping
+What each command is best for:
+
+- `team status` refreshes worker state and prints the full table.
+- `team logs` shows the current session logs, with tmux-pane fallback for interactive TUIs.
+- `team standup` asks the lead to write a markdown summary for every worker.
+- `team attach --multi` joins live worker panes into one tiled dashboard.
+
+## Run a task file
+
+```markdown
+## ~/repos/backend
+- [ ] Fix the login bug
+- [ ] Add regression tests (provider: codex, mode: oneshot)
+```
 
 ```bash
-# Stop the team and kill the tmux session
-team stop
+team run tasks.md
+team sync tasks.md
 ```
+
+Task-file syntax, rerun rules, and annotations are documented in [Task Files](task-files.md).
+
+## Work with more than one team
+
+```bash
+team list
+team -T other-team status
+TEAM_NAME=other-team team logs lead
+```
+
+`team init` switches the active team to the name you just created. Use `-T` or `TEAM_NAME` when you want to inspect another team without switching the active symlink. See [Managing Multiple Teams](multiple-teams.md) for the full workflow.
+
+## Troubleshooting
+
+If something looks wrong at runtime, start with:
+
+```bash
+team list
+team logs lead
+team status lead -v
+```
+
+The full runtime paths and recovery steps are in [Operations](operations.md).
+
+## Next pages
+
+- [Providers](providers.md)
+- [Commands](commands.md)
+- [Task Files](task-files.md)
+- [Examples](examples.md)
+- [Operations](operations.md)

@@ -1,209 +1,284 @@
 # Commands
 
+This page mirrors the current Click surface in `src/agentic_team/cli.py`.
+
+## Global options
+
+Top-level usage:
+
+```text
+team [OPTIONS] COMMAND [ARGS]...
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--version` | Show the installed `agentic-team` version |
+| `-T, --team TEXT` | Use a specific team instead of the active team |
+| `TEAM_NAME=<name>` | Environment-variable form of `--team` |
+| `--help` | Show top-level help |
+
+Notes:
+
+- `team "prompt"` is routed to `team send "prompt"` by the custom Click group.
+- If the bare word looks like a typo of a real subcommand, the CLI raises a usage error instead of silently routing it to `send`.
+
 ## Team lifecycle
+
+### `team doctor`
+
+```text
+team doctor [OPTIONS]
+```
+
+| Option | Meaning |
+|--------|---------|
+| `-p, --provider [claude\|codex\|gemini]` | Provider to verify. Defaults to the active team provider or auto-detect. |
+
+Verifies:
+
+1. tmux is installed and reports its version.
+2. The chosen provider CLI is on `PATH` and authenticated (`ProviderHealth` check).
+3. If an active team exists (and no explicit `--provider` override), the lead tmux session is alive.
+
+Use `team doctor` after installation and before `team init` to catch missing dependencies early.
 
 ### `team init`
 
-Initialize a new team and start the team lead agent.
-
-```bash
-team init <name> [options]
+```text
+team init [OPTIONS] NAME
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--provider`, `-p` | `claude` | Team lead agent provider (`claude`, `codex`, `gemini`) |
-| `--model`, `-m` | *(provider default)* | Model name (e.g. `opus`, `o4-mini`) |
-| `--working-dir`, `-C` | `.` | Working directory for agents |
-| `--max-workers` | `6` | Maximum concurrent workers |
-| `--worker-mode` | `interactive` | Default worker mode (`oneshot` or `interactive`) |
-| `--permissions` | `auto` | Permission mode for all agents |
+| Option | Meaning |
+|--------|---------|
+| `-p, --provider [claude\|codex\|gemini]` | Team lead provider. Auto-detected when exactly one viable provider is found; required when multiple are available. |
+| `-m, --model TEXT` | Lead model override. No default (uses the provider's own default). |
+| `--worker-mode [oneshot\|interactive]` | Default mode for new workers. Default `interactive`. |
+| `--permissions [auto\|default\|dangerously-skip-permissions]` | Permission mode saved in team config. Default `auto`. |
+| `--max-workers INTEGER` | Maximum concurrent workers. Default `6`. |
+| `-C, --working-dir DIRECTORY` | Default working directory for lead and workers. Default `.` (current directory). |
 
-### `team stop`
+Behavior notes:
 
-Stop a team and kill its tmux session.
-
-```bash
-team stop [<name>]
-```
-
-If no name is given, stops the active team.
+- `team init` saves the config, makes it active, creates a timestamped log directory, and starts the lead in tmux.
+- If the team config exists but the tmux session does not, `team init` overwrites that stale config.
+- If the tmux session is still alive, `team init` fails until you stop it.
 
 ### `team list`
 
-List all teams with their status.
-
-```bash
+```text
 team list
 ```
 
----
+Lists every saved team as:
 
-## Interacting with the lead
+```text
+<name>[(active)] — <provider> — running|stopped
+```
+
+### `team stop`
+
+```text
+team stop [NAME]
+```
+
+- With `NAME`, stops that team.
+- Without `NAME`, stops the active team.
+- If you stop the active team, the `~/.agentic-team/active` symlink is cleared.
+
+## Talking to the lead
 
 ### `team send`
 
-Send a prompt to the team lead agent. Bare prompts are automatically routed to this command.
+```text
+team send PROMPT...
+```
+
+Equivalent forms:
 
 ```bash
-# These are equivalent:
-team "your prompt here"
-team send "your prompt here"
+team "review the open workers and summarize progress"
+team send "review the open workers and summarize progress"
 ```
 
 ### `team attach`
 
-Attach to the team's tmux session.
-
-```bash
-team attach [--window <name>]
-team attach --multi
+```text
+team attach [OPTIONS]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--window`, `-w` | Jump directly to a worker's window. Supports prefix matching. |
-| `--multi`, `-m` | Join all workers into a single tiled window. |
+| Option | Meaning |
+|--------|---------|
+| `-w, --window TEXT` | Select a specific window before attaching |
+| `-m, --multi` | Join live worker panes into a tiled dashboard |
 
-`team attach` always shows one worker per tab. `team attach --multi` always shows all workers in one tiled view. Switching between the two is seamless.
+Behavior notes:
 
-!!! tip
-    Use `Ctrl-b n` / `Ctrl-b p` to switch between windows inside tmux.
+- `--window` supports prefix matching against worker names and `lead`.
+- Plain `team attach` first breaks any existing multi-pane layout and restores normal windows.
+- `team attach --multi` only includes workers that still have a live tmux window.
 
----
+### `team standup`
 
-## Managing workers
+```text
+team standup [OPTIONS]
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--timeout INTEGER` | Maximum seconds to wait for `standup.md` |
+| `-v, --verbose` | Stream the lead pane live while waiting |
+
+Behavior notes:
+
+- The CLI asks the lead to write `~/.agentic-team/state/<team>/standup.md`.
+- If the file appears, the CLI renders it as markdown.
+- If the lead never writes the file, the CLI falls back to the captured lead pane.
+
+## Worker management
 
 ### `team spawn-worker`
 
-Spawn a new worker agent.
-
-```bash
-team spawn-worker --task "description" [options]
+```text
+team spawn-worker [OPTIONS]
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--task`, `-t` | *(required)* | Task description |
-| `--mode` | *(team default)* | `oneshot` or `interactive` |
-| `--provider` | *(team default)* | Agent provider |
-| `--model` | *(team default)* | Model override |
-| `--name`, `-n` | *(auto-generated)* | Custom worker name |
-| `--working-dir`, `-C` | *(team default)* | Working directory for this worker |
-| `--resume-session`, `-r` | *(none)* | Resume an existing agent session by ID (claude/gemini) |
+| Option | Meaning |
+|--------|---------|
+| `-t, --task TEXT` | Task description for the worker. Required. |
+| `--mode [oneshot\|interactive]` | Worker mode. Defaults to the team's `worker_mode`. |
+| `--provider [claude\|codex\|gemini]` | Worker provider. Defaults to the team's provider. |
+| `--model TEXT` | Model override for this worker |
+| `-n, --name TEXT` | Custom worker name |
+| `-C, --working-dir DIRECTORY` | Working directory for this worker |
+| `-r, --resume-session TEXT` | Seed the worker from an existing Claude or Gemini session |
 
-#### Resuming an existing session
+Behavior notes:
 
-Use `--resume-session` to continue a previous Claude or Gemini session as a new worker:
-
-```bash
-# Continue a Claude session interactively
-team spawn-worker --task "now fix the tests" --name fix-tests \
-    --resume-session abc123-def456
-
-# Continue as a oneshot task
-team spawn-worker --task "add error handling" --name add-errors \
-    --mode oneshot --resume-session abc123-def456
-```
-
-The session ID is the UUID shown by `claude` at the end of a session, or captured automatically when a oneshot worker completes. Codex does not support session resume.
+- `--resume-session` is rejected for providers without a resume flag.
+- Interactive workers start first and receive their task once the pane looks ready.
+- Oneshot workers get the task as part of the command line.
 
 ### `team status`
 
-Show the status of all workers.
-
-```bash
-team status
+```text
+team status [OPTIONS] [WORKER_NAME]
 ```
 
-Displays worker name, provider, status (`running`/`done`), elapsed time, task source, and task description.
+Displays worker name, provider, status (`running`/`waiting`/`done`), elapsed time, task source, and task description.
 
-| Option | Description |
-|--------|-------------|
-| `--verbose`, `-v` | Live tail of agent output. Press `q` to quit. |
+| Option | Meaning |
+|--------|---------|
+| `-v, --verbose` | Live tail of worker or lead output. Press `q` to quit. |
 
-### `team wait`
+Behavior notes:
 
-Block until all running workers are done.
-
-```bash
-team wait [--timeout 600] [--interval 15]
-```
-
-Polls internally and shows the status table, reprinting only when a worker's status changes. Uses a single command invocation instead of repeated `team status` calls — ideal for the team lead to avoid token waste.
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--timeout`, `-t` | `600` | Max seconds to wait |
-| `--interval`, `-i` | `15` | Seconds between polls |
+- Plain `team status` always prints the full team table.
+- `WORKER_NAME` only changes behavior when you also pass `-v`.
+- In verbose mode, `WORKER_NAME` can target a worker prefix or `lead`.
 
 ### `team logs`
 
-View worker output via tmux capture-pane.
-
-```bash
-team logs [<name>] [--all] [--tail 50] [--raw]
+```text
+team logs [OPTIONS] [WORKER_NAME]
 ```
 
-- No arguments: shows all workers with headers
-- With a name: shows that specific worker
-- `--raw`: reads the pipe-pane log file instead of capture-pane
-- `--tail`, `-n`: number of lines to capture (default 50)
+| Option | Meaning |
+|--------|---------|
+| `-n, --tail INTEGER` | Number of lines to show |
+| `-a, --all` | Show every worker instead of a single target |
+
+Behavior notes:
+
+- No `WORKER_NAME` means "all workers".
+- `team logs lead` is supported.
+- The command prefers the current session log file and falls back to tmux `capture-pane` when the file is missing or empty.
+- There is no `--raw` flag in the current CLI.
 
 ### `team send-to-worker`
 
-Send a follow-up message to a running interactive worker.
-
-```bash
-team send-to-worker <name> "message"
+```text
+team send-to-worker WORKER_NAME MESSAGE...
 ```
+
+Sends text directly to a running interactive worker. `WORKER_NAME` supports prefix matching.
 
 ### `team resume`
 
-Resume a completed worker with a follow-up prompt. For oneshot Claude workers, this uses `--resume` with the captured session ID. For interactive workers, sends the prompt directly.
-
-```bash
-team resume <name> "follow-up prompt"
+```text
+team resume WORKER_NAME PROMPT...
 ```
+
+Resume rules:
+
+- Interactive workers receive the prompt directly through tmux.
+- Oneshot workers resume only if their saved worker state has a `session_id`.
+- If there is no stored `session_id`, the command fails with the current worker status, mode, and session ID.
 
 ### `team stop-worker`
 
-Stop a specific worker.
-
-```bash
-team stop-worker <name>
+```text
+team stop-worker WORKER_NAME
 ```
+
+Kills the worker window and marks that worker `done` in saved state.
+
+### `team wait`
+
+```text
+team wait [OPTIONS]
+```
+
+| Option | Meaning |
+|--------|---------|
+| `-t, --timeout INTEGER` | Maximum seconds to wait. Default `600`. |
+| `-i, --interval INTEGER` | Poll interval in seconds. Default `15`. |
+
+The command prints the status table immediately, then only reprints it when a worker's status changes.
 
 ### `team clear`
 
-Remove completed workers from the status list and close their tmux windows. Also cleans up orphaned windows that are no longer tracked.
-
-```bash
+```text
 team clear
 ```
 
----
+Removes completed workers from saved state and kills their tmux windows. It also cleans up orphaned tmux windows that are not tracked in the worker list.
 
-## Task files
+## Task-file commands
 
 ### `team run`
 
-Spawn workers from a markdown task file.
-
-```bash
-team run <file> [--dry-run] [--rerun] [--limit N]
+```text
+team run [OPTIONS] TASK_FILE
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Preview what would be spawned |
-| `--rerun` | Re-run completed tasks |
-| `--limit`, `-l` | Max tasks to spawn (defaults to team max_workers) |
+| Option | Meaning |
+|--------|---------|
+| `-l, --limit INTEGER` | Maximum total tasks allowed for this run, including workers already running |
+| `--dry-run` | Show resolved task details without spawning anything |
+| `--rerun` | Re-run completed tasks by reusing their existing worker slots when possible |
+
+Behavior notes:
+
+- The file format is documented in [Task Files](task-files.md).
+- Only unchecked tasks are considered.
+- The effective spawn count is `(limit or team.max_workers) - currently running workers`.
+- Matching is annotation-first (`← worker-name`), then exact task text.
 
 ### `team sync`
 
-Update a task file's checkboxes from current worker status.
-
-```bash
-team sync <file>
+```text
+team sync TASK_FILE
 ```
+
+Updates task annotations and ticks completed tasks to `[x]`. `team sync` only updates lines that already carry a `← worker-name` annotation.
+
+## Name matching
+
+Prefix matching is implemented by `src/agentic_team/names.py`. These commands accept worker-name prefixes:
+
+- `team attach -w <prefix>`
+- `team logs <prefix>`
+- `team send-to-worker <prefix> ...`
+- `team resume <prefix> ...`
+- `team stop-worker <prefix>`
+- `team status <prefix> -v`
