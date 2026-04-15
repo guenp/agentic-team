@@ -113,6 +113,9 @@ class StatusTransitionTests(unittest.TestCase):
                 # Return output indicating Codex has finished
                 return "Worked for 30 seconds\n\u203a "
 
+            def capture_pane_safe(self, target, lines=50, state_dir=None, snapshot=None, retries=2, context=""):
+                return self.capture_pane(target, lines=lines, state_dir=state_dir, snapshot=snapshot)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             state_root = Path(tmpdir)
             (state_root / team.name).mkdir(parents=True, exist_ok=True)
