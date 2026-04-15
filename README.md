@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="agentic-team" width="280">
+  <img src="https://guen.pw/agentic-team/logo.png" alt="agentic-team" width="280">
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@ User ──> team CLI ──> tmux session
 
 ## Demo
 
-![agentic-team demo](demo/demo.gif)
+![agentic-team demo](https://guen.pw/agentic-team/demo.gif)
 
 ## Installation
 
