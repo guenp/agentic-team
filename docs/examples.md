@@ -11,12 +11,12 @@ Run the same task across Claude, Codex, and Gemini to compare how each provider 
 Create `compare-providers.md`:
 
 ```markdown
-# Provider Comparison — Refactor auth module
+# Provider Comparison — Security audit
 
 ## ~/repos/myproject
-- [ ] Refactor the auth module to use JWT tokens instead of session cookies. Show the full diff. (provider: claude, name: claude-auth)
-- [ ] Refactor the auth module to use JWT tokens instead of session cookies. Show the full diff. (provider: codex, name: codex-auth)
-- [ ] Refactor the auth module to use JWT tokens instead of session cookies. Show the full diff. (provider: gemini, name: gemini-auth)
+- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: claude, name: claude-audit)
+- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: codex, name: codex-audit)
+- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: gemini, name: gemini-audit)
 ```
 
 ### Run it
@@ -32,9 +32,9 @@ team run compare-providers.md
 team status
 
 # Compare output side by side
-team logs claude-auth
-team logs codex-auth
-team logs gemini-auth
+team logs claude-audit
+team logs codex-audit
+team logs gemini-audit
 ```
 
 ### Ask the lead to compare
@@ -42,10 +42,10 @@ team logs gemini-auth
 Once all workers are done, ask the team lead to synthesize:
 
 ```bash
-team "All three workers are done. Review their output with 'team logs claude-auth', \
-'team logs codex-auth', and 'team logs gemini-auth'. Compare the approaches — \
-which implementation is most correct, most readable, and most complete? \
-Write a summary to comparison-report.md."
+team "All three workers are done. Review their output with 'team logs claude-audit', \
+'team logs codex-audit', and 'team logs gemini-audit'. Compare the findings — \
+which audit was most thorough? Were there findings unique to one provider? \
+Write a consolidated security report to audit-report.md."
 ```
 
 ### What to expect
