@@ -403,6 +403,8 @@ def logs(worker_name: str | None, tail: int, show_all: bool) -> None:
         resolved.append(matched)
 
     session_log_dir = config.current_session_log_dir(team.name)
+    tmux = TmuxOrchestrator(team.tmux_session)
+    state_dir = config.STATE_DIR / team.name
 
     for i, matched in enumerate(resolved):
         w = next((w for w in workers if w.name == matched), None)
@@ -420,13 +422,27 @@ def logs(worker_name: str | None, tail: int, show_all: bool) -> None:
         )
         click.echo(click.style(f"{'━' * 60}", fg="bright_black"))
 
+        # Try log file first; fall back to capture-pane for interactive
+        # TUI agents (Claude, Codex) that don't write to stderr.
         log_path = session_log_dir / f"{matched}.log" if session_log_dir else None
-        if not log_path or not log_path.exists():
-            click.echo("  (no log file)")
-        else:
+        has_log = log_path and log_path.exists() and log_path.stat().st_size > 0
+        if has_log:
             lines = log_path.read_text().splitlines()
             for line in lines[-tail:]:
                 click.echo(line)
+        elif tmux.session_exists():
+            try:
+                output = tmux.capture_pane(matched, lines=tail, state_dir=state_dir)
+                pane_lines = [l for l in output.splitlines() if l.strip()]
+                if pane_lines:
+                    for line in pane_lines[-tail:]:
+                        click.echo(line)
+                else:
+                    click.echo("  (no output yet)")
+            except Exception:
+                click.echo("  (pane not available)")
+        else:
+            click.echo("  (no log file)")
 
         if i < len(resolved) - 1:
             click.echo()
