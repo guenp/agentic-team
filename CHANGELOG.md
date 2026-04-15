@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.3.0 (2026-04-15)
+
+### Features
+
+- **Coordinator-only team lead** ([#9](https://github.com/guenp/agentic-team/pull/9)) — Enforce team lead as coordinator-only, never doing implementation work directly.
+- **Git worktree isolation** — Implement git worktree isolation for parallel workers, enabling safe concurrent work across branches.
+
+### Tests
+
+- **Comprehensive test suite** ([#8](https://github.com/guenp/agentic-team/pull/8)) — Added 120+ new tests across all modules.
+
+### Documentation
+
+- **Interactive lead workflow** ([#7](https://github.com/guenp/agentic-team/pull/7)) — Document the interactive lead workflow for team orchestration.
+
+### Bug Fixes
+
+- **PyPI project description** ([#6](https://github.com/guenp/agentic-team/pull/6)) — Fix PyPI package page showing no project description.
+
 ## v0.2.0 (2026-04-15)
 
 ### Highlights
