@@ -17,11 +17,12 @@ tasks to worker agents that run in parallel.
 
 ## Available Commands (run via Bash)
 
-- `team spawn-worker --task "description" --name <short-name> [--mode oneshot|interactive] [--provider claude|codex|gemini]`
+- `team spawn-worker --task "description" --name <short-name> [--mode oneshot|interactive] [--provider claude|codex|gemini] [--resume-session <session-id>]`
   Spawn a new worker agent. Always provide --name with a short (1-2 word, \
 kebab-case) name that describes the task, e.g. "fix-auth", "add-tests", \
 "update-docs". Use "interactive" (default) for tasks needing back-and-forth, \
-"oneshot" for fire-and-forget tasks.
+"oneshot" for fire-and-forget tasks. Use --resume-session to continue an \
+existing Claude or Gemini session.
 
 - `team status`
   Check the status of all workers (running/done/error + elapsed time).
@@ -203,14 +204,24 @@ def build_resume_command(
     session_id: str,
     prompt: str,
     log_path: Path | None = None,
+    mode: str = "oneshot",
 ) -> str:
-    """Build a command to resume a prior agent session with a follow-up."""
+    """Build a command to resume a prior agent session with a follow-up.
+
+    In oneshot mode the prompt is passed as a positional argument.
+    In interactive mode the agent opens an interactive session continuing
+    from the prior conversation (prompt is sent separately via tmux).
+    """
     provider = get_provider(provider_name)
     if not provider.resume_flag:
         raise ValueError(f"Provider {provider_name!r} does not support session resume")
 
     parts: list[str] = [provider.cli_command]
-    parts.extend(provider.oneshot_args)
+    if mode == "oneshot":
+        parts.extend(provider.oneshot_args)
+    else:
+        parts.extend(provider.interactive_args)
     parts.extend([provider.resume_flag, session_id])
-    parts.append(prompt)
-    return _build_command_with_logging(parts, provider_name, "oneshot", log_path)
+    if mode == "oneshot":
+        parts.append(prompt)
+    return _build_command_with_logging(parts, provider_name, mode, log_path)

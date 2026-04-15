@@ -96,6 +96,7 @@ team attach --multi
 team spawn-worker --task "description" [--mode oneshot|interactive]
                   [--provider claude|codex|gemini] [--model <model>]
                   [--name custom-name] [--working-dir <path>]
+                  [--resume-session <session-id>]
 
 # Check status of all workers
 team status

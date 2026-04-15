@@ -202,6 +202,11 @@ def send(prompt: tuple[str, ...]) -> None:
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
     help="Working directory for this worker (defaults to team setting).",
 )
+@click.option(
+    "--resume-session", "-r",
+    default=None,
+    help="Resume an existing agent session by ID (claude/gemini).",
+)
 def spawn_worker(
     task: str,
     mode: str | None,
@@ -209,6 +214,7 @@ def spawn_worker(
     model: str | None,
     name: str | None,
     working_dir: str | None,
+    resume_session: str | None,
 ) -> None:
     """Spawn a new worker agent."""
     team = _get_team()
@@ -231,6 +237,16 @@ def spawn_worker(
     existing_names = [w.name for w in workers]
     worker_name = name or names.name_from_task(task, existing_names)
 
+    # Validate resume-session support
+    if resume_session:
+        from .models import get_provider
+        prov_config = get_provider(provider)
+        if not prov_config.resume_flag:
+            raise click.ClickException(
+                f"Provider {provider!r} does not support --resume-session. "
+                f"Only claude and gemini support session resume."
+            )
+
     # Build command with log path
     workdir = working_dir or team.working_dir
     session_log_dir = config.current_session_log_dir(team.name)
@@ -238,21 +254,31 @@ def spawn_worker(
         session_log_dir = config.create_session_log_dir(team.name)
     log_path = session_log_dir / f"{worker_name}.log"
 
-    worker_cmd = agents.build_worker_command(
-        provider_name=provider,
-        task=task,
-        mode=mode,
-        model=model,
-        permissions=team.permissions,
-        team_name=team.name,
-        working_dir=workdir,
-        log_path=log_path,
-    )
+    if resume_session:
+        worker_cmd = agents.build_resume_command(
+            provider_name=provider,
+            session_id=resume_session,
+            prompt=task,
+            log_path=log_path,
+            mode=mode,
+        )
+    else:
+        worker_cmd = agents.build_worker_command(
+            provider_name=provider,
+            task=task,
+            mode=mode,
+            model=model,
+            permissions=team.permissions,
+            team_name=team.name,
+            working_dir=workdir,
+            log_path=log_path,
+        )
 
     # Spawn in tmux
     tmux = TmuxOrchestrator(team.tmux_session)
     state_dir = config.STATE_DIR / team.name
-    # For interactive workers, send the task as an initial prompt after the agent starts
+    # For interactive workers, send the task as an initial prompt after the agent starts.
+    # For oneshot (including resume), the prompt is baked into the command.
     initial_prompt = task if mode == "interactive" else None
     tmux.spawn_worker(worker_name, worker_cmd, workdir, state_dir, initial_prompt=initial_prompt)
 
@@ -269,6 +295,7 @@ def spawn_worker(
         mode=mode,
         tmux_window=worker_name,
         source=source,
+        session_id=resume_session,
     )
     workers.append(worker)
     config.save_workers(team.name, workers)

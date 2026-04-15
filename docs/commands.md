@@ -90,6 +90,23 @@ team spawn-worker --task "description" [options]
 | `--model` | *(team default)* | Model override |
 | `--name`, `-n` | *(auto-generated)* | Custom worker name |
 | `--working-dir`, `-C` | *(team default)* | Working directory for this worker |
+| `--resume-session`, `-r` | *(none)* | Resume an existing agent session by ID (claude/gemini) |
+
+#### Resuming an existing session
+
+Use `--resume-session` to continue a previous Claude or Gemini session as a new worker:
+
+```bash
+# Continue a Claude session interactively
+team spawn-worker --task "now fix the tests" --name fix-tests \
+    --resume-session abc123-def456
+
+# Continue as a oneshot task
+team spawn-worker --task "add error handling" --name add-errors \
+    --mode oneshot --resume-session abc123-def456
+```
+
+The session ID is the UUID shown by `claude` at the end of a session, or captured automatically when a oneshot worker completes. Codex does not support session resume.
 
 ### `team status`
 
