@@ -2,64 +2,50 @@
 
 ## Multi-provider comparison
 
-![Multi-provider comparison demo](compare-providers.gif)
+![Multi-provider comparison demo](../demo/compare-providers.gif)
 
-Run the same task across Claude, Codex, and Gemini to compare how each provider approaches it. A Claude team lead coordinates and reviews the results.
+Run the same task across different providers to compare how each approaches it.
 
 ### Task file
 
 Create `compare-providers.md`:
 
 ```markdown
-# Provider Comparison — Security audit
+# Provider Comparison — Quick demo
 
-## ~/repos/myproject
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: claude, name: claude-audit)
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: codex, name: codex-audit)
-- [ ] Audit the codebase for security issues: command injection in subprocess calls, path traversal in file operations, and unsafe deserialization. Report findings with file paths and line numbers. (provider: gemini, name: gemini-audit)
+## .
+- [ ] List all Python files in src/ and count total lines of code. (provider: claude, name: claude-loc)
+- [ ] List all Python files in src/ and count total lines of code. (provider: codex, name: codex-loc)
 ```
 
 ### Run it
 
 ```bash
 # Initialize with Claude as the team lead
-team init compare --provider claude --working-dir ~/repos/myproject
+team init compare --provider claude
 
-# Spawn all three workers
+# Spawn workers from the task file
 team run compare-providers.md
 
 # Watch progress
 team status
 
-# Watch all three side by side in a tiled dashboard
-team attach --multi
-
-# Or compare output individually
-team logs claude-audit
-team logs codex-audit
-team logs gemini-audit
+# Compare output
+team logs claude-loc
+team logs codex-loc
 ```
 
-### Ask the lead to compare
+### Scaling up
 
-Once all workers are done, ask the team lead to synthesize:
+For a more thorough comparison (e.g. a security audit across all three providers), see `demo/compare-providers-audit.md`:
 
 ```bash
-team "All three workers are done. Review their output with 'team logs claude-audit', \
-'team logs codex-audit', and 'team logs gemini-audit'. Compare the findings — \
-which audit was most thorough? Were there findings unique to one provider? \
-Write a consolidated security report to audit-report.md."
+team run demo/compare-providers-audit.md
+
+# After all workers finish, ask the lead to synthesize:
+team "Review the output from all workers with 'team logs'. Compare the findings \
+and write a consolidated report."
 ```
-
-### What to expect
-
-Each provider has different strengths:
-
-- **Claude** tends to be thorough with detailed explanations and edge case analysis
-- **Codex** is fast and produces concise, focused findings
-- **Gemini** often provides alternative perspectives and explains trade-offs
-
-The team lead reviews all three outputs and writes a consolidated report, giving you broader coverage than any single provider.
 
 ---
 
