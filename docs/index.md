@@ -1,6 +1,10 @@
-# agentic-team
+<p align="center">
+  <img src="logo.png" alt="agentic-team" width="400">
+</p>
 
-Orchestrate teams of AI coding agents working in parallel inside tmux sessions.
+<p align="center">
+  Orchestrate teams of AI coding agents working in parallel inside tmux sessions.
+</p>
 
 A **team lead** agent runs interactively and delegates tasks to **worker** agents (Claude, Codex, Gemini) that execute in their own tmux windows. Workers can run in oneshot or interactive mode, each with independent working directories, providers, and models.
 
