@@ -256,6 +256,10 @@ def spawn_worker(
     initial_prompt = task if mode == "interactive" else None
     tmux.spawn_worker(worker_name, worker_cmd, workdir, state_dir, initial_prompt=initial_prompt)
 
+    # Detect if spawned by the lead agent (running inside the team's tmux session)
+    import os
+    source = "lead" if os.environ.get("TMUX", "") else "cli"
+
     # Record state
     worker = config.WorkerState(
         name=worker_name,
@@ -264,6 +268,7 @@ def spawn_worker(
         model=model,
         mode=mode,
         tmux_window=worker_name,
+        source=source,
     )
     workers.append(worker)
     config.save_workers(team.name, workers)
@@ -981,6 +986,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
                 model=model,
                 mode=mode,
                 tmux_window=worker_name,
+                source="file",
             )
             workers.append(worker)
             worker_by_name[worker_name] = worker

@@ -59,6 +59,7 @@ class WorkerState:
     status: str = "running"  # "running" | "done" | "error"
     tmux_window: str = ""
     session_id: str | None = None  # agent session ID for --resume
+    source: str = "cli"  # "cli" | "file" | "lead"
     started_at: str = ""
     pid: int | None = None
 

@@ -124,6 +124,7 @@ def get_team_status(config: TeamConfig) -> dict:
             "mode": w.mode,
             "status": w.status,
             "task": w.task,
+            "source": getattr(w, "source", "cli"),
             "elapsed": elapsed,
         })
 
@@ -172,18 +173,28 @@ def format_status(status: dict) -> None:
         "pending": "dim",
     }
 
+    source_styles = {
+        "cli": "bright_blue",
+        "file": "magenta",
+        "lead": "bright_yellow",
+    }
+
     for w in workers:
         style = status_styles.get(w["status"], "")
-        task = w["task"]
-        if len(task) > 60:
-            task = task[:57] + "..."
+        task_text = w["task"]
+        if len(task_text) > 55:
+            task_text = task_text[:52] + "..."
+        source = w.get("source", "cli")
+        task_col = Text()
+        task_col.append(f"[{source}] ", style=source_styles.get(source, "dim"))
+        task_col.append(task_text)
         table.add_row(
             w["name"],
             w["provider"],
             w["mode"],
             Text(w["status"], style=style),
             w["elapsed"],
-            task,
+            task_col,
         )
 
     console.print(table)
