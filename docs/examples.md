@@ -2,7 +2,7 @@
 
 ## Multi-provider comparison
 
-![Multi-provider comparison demo](../demo/compare-providers.gif)
+![Multi-provider comparison demo](compare-providers.gif)
 
 Run the same task across different providers to compare how each approaches it.
 
