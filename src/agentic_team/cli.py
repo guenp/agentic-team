@@ -524,15 +524,6 @@ def _show_standup_result(tmux: TmuxOrchestrator, report_path: Path) -> None:
 
 # ── Shared helpers for live pane display ─────────────────────────
 
-# Lines matching any of these are filtered from live pane tails.
-_CHROME_FILTERS = (
-    "esc to inter",
-    "auto mode",
-    "shift+tab",
-    "Use /skills",
-    "Type your message",
-)
-
 
 def _pane_tail(
     tmux: TmuxOrchestrator,
@@ -542,38 +533,18 @@ def _pane_tail(
 ) -> str:
     """Capture the last *n* meaningful lines from a pane.
 
-    Strips blank lines, separator lines (───), and TUI chrome.
+    Strips blank lines and separator-only lines (───).
     """
-    import re
-
     try:
         raw = tmux.capture_pane(target, lines=30, state_dir=state_dir).rstrip()
     except Exception:
         return "(pane not available)"
-
-    # Extract token/budget info from the status bar before filtering it out.
-    # Claude: "86050 tokens"  Codex: "77% left"
-    status_info = ""
-    for raw_line in raw.splitlines():
-        m = re.search(r"(\d[\d,]+ tokens)", raw_line)
-        if m:
-            status_info = m.group(1)
-        m = re.search(r"(\d+% left)", raw_line)
-        if m:
-            status_info = m.group(1)
-
     lines = [
-        l for l in raw.splitlines()
+        l.rstrip() for l in raw.splitlines()
         if l.strip()
-        and not l.strip().startswith("─")
-        and not l.strip().startswith("▀")
-        and not l.strip().startswith("▄")
-        and not any(f in l for f in _CHROME_FILTERS)
+        and not all(c in "─▀▄━═" for c in l.strip())
     ]
-    result = "\n".join(lines[-n:]) if lines else "(no output)"
-    if status_info:
-        result += f"\n[dim]{status_info}[/dim]"
-    return result
+    return "\n".join(lines[-n:]) if lines else "(no output)"
 
 
 def _status_live(
