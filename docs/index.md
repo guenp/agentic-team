@@ -7,8 +7,8 @@ A **team lead** agent runs interactively and delegates tasks to **worker** agent
 ```
 User ──> team CLI ──> tmux session
                        ├── window 0: Team Lead (interactive)
-                       ├── window 1: worker "adder"
-                       ├── window 2: worker "bear"
+                       ├── window 1: worker "fix-auth"
+                       ├── window 2: worker "add-tests"
                        └── ...
 ```
 
@@ -24,6 +24,7 @@ User ──> team CLI ──> tmux session
 - **Task files**: Define batch tasks in markdown with checkbox syntax
 - **Smart routing**: `team "your prompt"` sends directly to the lead agent
 - **Completion detection**: Automatic status tracking via tmux pane analysis
+- **Multi-window dashboard**: `team attach --multi` for a tiled view of all workers
 - **Session resumption**: Resume completed Claude workers with full context
 
 ## Installation

@@ -7,8 +7,8 @@ A **team lead** agent runs interactively and delegates tasks to **worker** agent
 ```
 User ──> team CLI ──> tmux session
                        ├── window 0: Team Lead (interactive)
-                       ├── window 1: worker "adder"
-                       ├── window 2: worker "bear"
+                       ├── window 1: worker "fix-auth"
+                       ├── window 2: worker "add-tests"
                        └── ...
 ```
 
@@ -80,6 +80,9 @@ team send "your prompt here"
 
 # Attach to the tmux session
 team attach [--window <name>]
+
+# Tiled dashboard showing all workers side by side
+team attach --multi
 ```
 
 ### Managing workers
@@ -142,7 +145,7 @@ team sync tasks.md
 
 ## Worker names
 
-Workers are assigned alphabetical animal names automatically: `adder`, `bear`, `crane`, `dingo`, etc. Commands that accept a worker name support prefix matching -- `team logs b` resolves to `bear`.
+Workers are named automatically from their task description: a task like "fix the login bug" becomes `fix-login`. If names collide, a numeric suffix is added (`fix-login-2`). You can also set a custom name with `--name` or the `(name: ...)` task file override. Commands that accept a worker name support prefix matching -- `team logs fix` resolves to `fix-login`.
 
 ## How it works
 
@@ -164,8 +167,8 @@ Workers are assigned alphabetical animal names automatically: `adder`, `bear`, `
 ├── logs/           # Worker logs
 │   └── myproject/
 │       ├── lead.log
-│       ├── adder.log
-│       └── bear.log
+│       ├── fix-auth.log
+│       └── add-tests.log
 └── active          # Symlink to active team's state dir
 ```
 

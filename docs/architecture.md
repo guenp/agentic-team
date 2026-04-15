@@ -39,6 +39,7 @@ State is stored in TOML using `tomllib` (read) and `tomli_w` (write).
 - **I/O**: `send-keys` (with `-l` literal flag), `capture-pane`
 - **Logging**: `pipe-pane` to log files
 - **Attach**: `os.execvp` for proper terminal handoff
+- **Multi-attach**: Creates a tiled dashboard window with `split-window` + `select-layout tiled`, each pane running a capture loop
 
 ### Pending prompt delivery
 

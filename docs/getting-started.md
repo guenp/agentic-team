@@ -64,7 +64,10 @@ team status
 team logs
 
 # View a specific worker
-team logs adder
+team logs fix-auth
+
+# Tiled dashboard of all workers
+team attach --multi
 ```
 
 ## Stopping

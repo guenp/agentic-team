@@ -31,7 +31,10 @@ team run compare-providers.md
 # Watch progress
 team status
 
-# Compare output side by side
+# Watch all three side by side in a tiled dashboard
+team attach --multi
+
+# Or compare output individually
 team logs claude-audit
 team logs codex-audit
 team logs gemini-audit
@@ -117,6 +120,24 @@ team status
 team "All test fixes are in. Run the full test suite with 'pytest' and report \
 if anything else broke. If all green, commit the fixes."
 ```
+
+---
+
+## Multi-window dashboard
+
+Monitor all workers at once with a tiled tmux view:
+
+```bash
+team init myproject --provider claude --working-dir ~/repos/myproject
+team run tasks.md
+
+# Open a tiled dashboard showing all workers side by side
+team attach --multi
+```
+
+Each pane shows a live-updating capture of one worker's output, refreshed every second. The worker name is displayed as a cyan header at the top of each pane.
+
+Use `Ctrl-b d` to detach from the dashboard and return to your shell.
 
 ---
 
