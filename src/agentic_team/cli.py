@@ -19,7 +19,6 @@ from .models import PROVIDERS
 from .tmux import TmuxError, TmuxOrchestrator
 
 
-PANE_CAPTURE_RETRY_BUDGET = 2
 
 
 # ── Custom group for bare `team "prompt"` support ────────────────
@@ -91,6 +90,19 @@ class _PathSnapshot:
     is_symlink: bool = False
     link_target: str | None = None
     data: bytes | None = None
+
+
+@dataclass
+class _PlanSpec:
+    """Validated plan for a single task before tmux execution."""
+    kind: str  # "spawn" | "rerun"
+    entry: taskfile.TaskEntry
+    existing_worker: config.WorkerState | None
+    worker_name: str
+    provider: str
+    model: str | None
+    mode: str
+    workdir: str
 
 
 @dataclass
@@ -200,29 +212,6 @@ def _mark_worker_running(worker: config.WorkerState, task: str | None = None) ->
     worker.started_at = datetime.now(timezone.utc).isoformat()
     worker.last_error = None
     worker.exit_code = None
-
-
-def _capture_pane_text(
-    tmux: TmuxOrchestrator,
-    target: str,
-    *,
-    lines: int,
-    state_dir: Path | None = None,
-    context: str,
-) -> str | None:
-    """Retry capture-pane a bounded number of times before giving up."""
-    last_error: TmuxError | None = None
-    for _ in range(PANE_CAPTURE_RETRY_BUDGET):
-        try:
-            return tmux.capture_pane(target, lines=lines, state_dir=state_dir)
-        except TmuxError as exc:
-            last_error = exc
-    if last_error is not None:
-        warnings.warn(
-            f"{context} failed after {PANE_CAPTURE_RETRY_BUDGET} attempts: {last_error}",
-            stacklevel=2,
-        )
-    return None
 
 
 # ── team init ────────────────────────────────────────────────────
@@ -750,8 +739,7 @@ def _standup_done(report_path: Path) -> bool:
 
 def _lead_is_idle(tmux: TmuxOrchestrator, provider: str) -> bool:
     """Check if the lead agent is idle (not actively processing)."""
-    raw = _capture_pane_text(
-        tmux,
+    raw = tmux.capture_pane_safe(
         "lead",
         lines=30,
         context="checking lead idleness",
@@ -852,8 +840,7 @@ def _show_standup_result(tmux: TmuxOrchestrator, report_path: Path) -> None:
         click.echo()
         click.echo("(Lead didn't write the report file — showing pane output)")
         click.echo()
-        output = _capture_pane_text(
-            tmux,
+        output = tmux.capture_pane_safe(
             "lead",
             lines=80,
             context="capturing standup output",
@@ -880,8 +867,7 @@ def _pane_tail(
 
     Strips blank lines and separator-only lines (───).
     """
-    raw = _capture_pane_text(
-        tmux,
+    raw = tmux.capture_pane_safe(
         target,
         lines=30,
         state_dir=state_dir,
@@ -1089,8 +1075,7 @@ def logs(worker_name: str | None, tail: int, show_all: bool) -> None:
             for line in lines[-tail:]:
                 click.echo(line)
         elif tmux.session_exists():
-            output = _capture_pane_text(
-                tmux,
+            output = tmux.capture_pane_safe(
                 matched,
                 lines=tail,
                 state_dir=state_dir,
@@ -1250,7 +1235,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
     planned_by_name = {w.name: w for w in planned_workers}
     reserved_names = set(planned_by_name)
 
-    plan_specs: list[tuple[str, taskfile.TaskEntry, config.WorkerState | None, str, str, str | None, str, str]] = []
+    plan_specs: list[_PlanSpec] = []
     for entry in to_act:
         prov = entry.provider or team.provider
         if prov not in PROVIDERS:
@@ -1268,7 +1253,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
         existing_worker = planned_by_name.get(entry.worker_name) if entry.worker_name else None
         if existing_worker and existing_worker.status == "done":
             _mark_worker_running(existing_worker, task=entry.task)
-            plan_specs.append(("rerun", entry, existing_worker, existing_worker.name, prov, model, mode, workdir))
+            plan_specs.append(_PlanSpec("rerun", entry, existing_worker, existing_worker.name, prov, model, mode, workdir))
             continue
 
         worker_name = entry.name or names.name_from_task(entry.task, list(reserved_names))
@@ -1289,13 +1274,13 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
         planned_workers.append(new_worker)
         planned_by_name[worker_name] = new_worker
         reserved_names.add(worker_name)
-        plan_specs.append(("spawn", entry, new_worker, worker_name, prov, model, mode, workdir))
+        plan_specs.append(_PlanSpec("spawn", entry, new_worker, worker_name, prov, model, mode, workdir))
 
     if dry_run:
-        for kind, entry, existing_worker, worker_name, prov, _, mode, workdir in plan_specs:
-            tag = " (rerun)" if kind == "rerun" else ""
-            click.echo(f"  - {entry.task}{tag}")
-            click.echo(f"    worker={worker_name}  dir={workdir}  provider={prov}  mode={mode}")
+        for spec in plan_specs:
+            tag = " (rerun)" if spec.kind == "rerun" else ""
+            click.echo(f"  - {spec.entry.task}{tag}")
+            click.echo(f"    worker={spec.worker_name}  dir={spec.workdir}  provider={spec.provider}  mode={spec.mode}")
         return
 
     tmux = TmuxOrchestrator(team.tmux_session)
@@ -1311,89 +1296,90 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
         session_log_dir = config.create_session_log_dir(team.name)
 
     actions: list[_RunAction] = []
-    for kind, entry, existing_worker, worker_name, prov, model, mode, workdir in plan_specs:
-        log_path = session_log_dir / f"{worker_name}.log"
-        if kind == "rerun" and existing_worker is not None:
-            if existing_worker.mode == "interactive":
-                if existing_worker.tmux_window not in live_windows:
+    for spec in plan_specs:
+        log_path = session_log_dir / f"{spec.worker_name}.log"
+        if spec.kind == "rerun" and spec.existing_worker is not None:
+            ew = spec.existing_worker
+            if ew.mode == "interactive":
+                if ew.tmux_window not in live_windows:
                     raise click.ClickException(
-                        f"Interactive worker {worker_name!r} no longer has a live tmux window."
+                        f"Interactive worker {spec.worker_name!r} no longer has a live tmux window."
                     )
                 actions.append(_RunAction(
                     kind="rerun-interactive",
-                    worker_name=worker_name,
-                    task=entry.task,
-                    workdir=workdir,
-                    provider=existing_worker.provider,
-                    mode=existing_worker.mode,
-                    model=existing_worker.model,
+                    worker_name=spec.worker_name,
+                    task=spec.entry.task,
+                    workdir=spec.workdir,
+                    provider=ew.provider,
+                    mode=ew.mode,
+                    model=ew.model,
                     existing_window=True,
                 ))
                 continue
 
-            if existing_worker.session_id and existing_worker.provider == "claude":
+            if ew.session_id and ew.provider == "claude":
                 command = agents.build_resume_command(
-                    existing_worker.provider,
-                    existing_worker.session_id,
-                    entry.task,
+                    ew.provider,
+                    ew.session_id,
+                    spec.entry.task,
                     log_path=log_path,
                 )
                 actions.append(_RunAction(
                     kind="rerun-shell",
-                    worker_name=worker_name,
-                    task=entry.task,
-                    workdir=workdir,
-                    provider=existing_worker.provider,
-                    mode=existing_worker.mode,
-                    model=existing_worker.model,
+                    worker_name=spec.worker_name,
+                    task=spec.entry.task,
+                    workdir=spec.workdir,
+                    provider=ew.provider,
+                    mode=ew.mode,
+                    model=ew.model,
                     command=command,
-                    existing_window=worker_name in live_windows,
+                    existing_window=spec.worker_name in live_windows,
                 ))
                 continue
 
             command = agents.build_worker_command(
-                provider_name=existing_worker.provider,
-                task=entry.task,
-                mode=existing_worker.mode,
-                model=existing_worker.model or model,
+                provider_name=ew.provider,
+                task=spec.entry.task,
+                mode=ew.mode,
+                model=ew.model or spec.model,
                 permissions=team.permissions,
                 team_name=team.name,
-                working_dir=workdir,
+                working_dir=spec.workdir,
                 log_path=log_path,
             )
             actions.append(_RunAction(
                 kind="rerun-shell",
-                worker_name=worker_name,
-                task=entry.task,
-                workdir=workdir,
-                provider=existing_worker.provider,
-                mode=existing_worker.mode,
-                model=existing_worker.model or model,
+                worker_name=spec.worker_name,
+                task=spec.entry.task,
+                workdir=spec.workdir,
+                provider=ew.provider,
+                mode=ew.mode,
+                model=ew.model or spec.model,
                 command=command,
-                existing_window=worker_name in live_windows,
+                existing_window=spec.worker_name in live_windows,
             ))
             continue
 
         command = agents.build_worker_command(
-            provider_name=prov,
-            task=entry.task,
-            mode=mode,
-            model=model,
+            provider_name=spec.provider,
+            task=spec.entry.task,
+            mode=spec.mode,
+            model=spec.model,
             permissions=team.permissions,
             team_name=team.name,
-            working_dir=workdir,
+            working_dir=spec.workdir,
             log_path=log_path,
         )
         actions.append(_RunAction(
             kind="spawn",
-            worker_name=worker_name,
-            task=entry.task,
-            workdir=workdir,
-            provider=prov,
-            mode=mode,
-            model=model,
+            worker_name=spec.worker_name,
+            task=spec.entry.task,
+            workdir=spec.workdir,
+            provider=spec.provider,
+            mode=spec.mode,
+            model=spec.model,
             command=command,
-            initial_prompt=entry.task if mode == "interactive" else None,
+            initial_prompt=spec.entry.task if spec.mode == "interactive" else None,
         ))
 
     original_workers = copy.deepcopy(workers)

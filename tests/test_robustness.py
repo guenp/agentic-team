@@ -39,6 +39,12 @@ class FakeTmux:
     def capture_pane(self, target: str, lines: int = 50, state_dir: Path | None = None) -> str:
         return self._pane_output.get(target, "")
 
+    def capture_pane_safe(
+        self, target: str, lines: int = 50, state_dir: Path | None = None,
+        retries: int = 2, context: str = "",
+    ) -> str | None:
+        return self._pane_output.get(target)
+
     def is_pane_dead(self, target: str, state_dir: Path | None = None) -> bool:
         return target in self._dead_targets
 

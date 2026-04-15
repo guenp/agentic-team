@@ -14,10 +14,9 @@ from .config import (
     load_workers,
     save_workers,
 )
-from .tmux import EXIT_SENTINEL, TmuxError, TmuxOrchestrator
+from .tmux import EXIT_SENTINEL, TmuxOrchestrator
 
 
-CAPTURE_RETRY_BUDGET = 2
 PROMPT_DELIVERY_TIMEOUT_SECONDS = 30
 _EXIT_RE = re.compile(re.escape(EXIT_SENTINEL) + r"(?P<code>\d+)")
 _COMMAND_NOT_FOUND_RE = re.compile(r"command not found", re.IGNORECASE)
@@ -82,8 +81,7 @@ def get_team_status(config: TeamConfig) -> dict:
 
         captured = None
         if in_windows:
-            captured = _capture_pane_with_retry(
-                tmux,
+            captured = tmux.capture_pane_safe(
                 worker.tmux_window,
                 lines=80,
                 state_dir=state_dir,
@@ -290,8 +288,7 @@ def _is_oneshot_done(
     This avoids false positives from previous runs' output still visible
     in scrollback.
     """
-    output = _capture_pane_with_retry(
-        tmux,
+    output = tmux.capture_pane_safe(
         worker.tmux_window,
         lines=80,
         state_dir=state_dir,
@@ -361,8 +358,7 @@ def _is_interactive_idle(
     - Codex: "Worked for" summary or idle prompt "›" visible
     - Gemini: "Type your message" idle prompt visible
     """
-    raw = _capture_pane_with_retry(
-        tmux,
+    raw = tmux.capture_pane_safe(
         worker.tmux_window,
         lines=30,
         state_dir=state_dir,
@@ -479,8 +475,7 @@ def _try_extract_session_id(config: TeamConfig, worker: WorkerState) -> None:
 
     # Try capture-pane first (clean text, may be wrapped across lines)
     tmux = TmuxOrchestrator(config.tmux_session)
-    output = _capture_pane_with_retry(
-        tmux,
+    output = tmux.capture_pane_safe(
         worker.tmux_window,
         lines=80,
         context=f"extracting session id for {worker.name}",
@@ -497,34 +492,11 @@ def _try_extract_session_id(config: TeamConfig, worker: WorkerState) -> None:
             break
 
     # Join lines after the last command (no separators so wrapped UUIDs reassemble)
-    import re
     after = lines[last_cmd_idx + 1:] if last_cmd_idx >= 0 else lines
     flat = "".join(after)
     m = re.search(r'"session_id":"([a-f0-9-]+)"', flat)
     if m:
         worker.session_id = m.group(1)
-
-
-def _capture_pane_with_retry(
-    tmux: TmuxOrchestrator,
-    target: str,
-    lines: int,
-    state_dir: Path | None = None,
-    context: str = "capturing tmux pane",
-) -> str | None:
-    """Retry capture-pane a bounded number of times before warning."""
-    last_error: TmuxError | None = None
-    for _ in range(CAPTURE_RETRY_BUDGET):
-        try:
-            return tmux.capture_pane(target, lines=lines, state_dir=state_dir)
-        except TmuxError as exc:
-            last_error = exc
-    if last_error is not None:
-        warnings.warn(
-            f"{context} failed after {CAPTURE_RETRY_BUDGET} attempts: {last_error}",
-            stacklevel=2,
-        )
-    return None
 
 
 def _extract_exit_code(output: str | None) -> int | None:

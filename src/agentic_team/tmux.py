@@ -175,7 +175,7 @@ class TmuxOrchestrator:
 
             # Check if the agent is ready by scanning the pane for known
             # prompt indicators from each provider's startup output.
-            output = self._capture_pane_with_retry(target, lines=30)
+            output = self.capture_pane_safe(target, lines=30, context=f"checking agent readiness for {target}")
             if output is None:
                 continue
             ready = any(
@@ -478,14 +478,15 @@ class TmuxOrchestrator:
             return 0
         return len(result.stdout.strip().splitlines())
 
-    def _capture_pane_with_retry(
+    def capture_pane_safe(
         self,
         target: str,
         lines: int,
         state_dir: Path | None = None,
         retries: int = CAPTURE_RETRY_BUDGET,
+        context: str = "capturing tmux pane",
     ) -> str | None:
-        """Retry transient capture-pane failures a bounded number of times."""
+        """Retry capture-pane a bounded number of times before warning."""
         last_error: TmuxError | None = None
         for _ in range(retries):
             try:
@@ -494,7 +495,7 @@ class TmuxOrchestrator:
                 last_error = exc
         if last_error is not None:
             warnings.warn(
-                f"Could not capture tmux pane for {target} after {retries} attempts: {last_error}",
+                f"{context} failed after {retries} attempts: {last_error}",
                 stacklevel=2,
             )
         return None

@@ -11,11 +11,11 @@ Supported inline overrides: provider, mode, model, name
 
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from .config import _atomic_write_bytes as _atomic_write_bytes_impl
 
 # Matches: - [ ] task text (key: val, key: val)
 _CHECKBOX_RE = re.compile(
@@ -75,28 +75,12 @@ def _read_task_text(path: Path) -> str:
 
 def _atomic_write_text(path: Path, text: str, description: str) -> None:
     """Write task files atomically to avoid partial updates."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path: Path | None = None
+    from .config import StateFileError
+
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp:
-            tmp.write(text)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            tmp_path = Path(tmp.name)
-        tmp_path.replace(path)
-    except OSError as exc:
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
-        raise TaskFileError(
-            f"Could not write {description} at {path}: {exc}. "
-            f"Check permissions, free disk space, or restore the file and retry."
-        ) from exc
+        _atomic_write_bytes_impl(path, text.encode(), description)
+    except StateFileError as exc:
+        raise TaskFileError(str(exc)) from exc
 
 
 def parse_task_file(path: Path) -> list[TaskEntry]:
