@@ -1,202 +1,126 @@
 # Examples
 
-## Multi-provider comparison
+These examples use only behavior that exists in the current CLI and task-file parser.
 
-![Multi-provider comparison demo](compare-providers.gif)
+## Mixed-provider batch
 
-Run the same task across different providers to compare how each approaches it.
+Run a small batch where each task uses a different provider or mode.
 
 ### Task file
 
-Create `compare-providers.md`:
-
 ```markdown
-# Provider Comparison — Quick demo
-
-## .
-- [ ] List all Python files in src/ and count total lines of code. (provider: claude, name: claude-loc)
-- [ ] List all Python files in src/ and count total lines of code. (provider: codex, name: codex-loc)
+## ~/repos/myproject
+- [ ] Review the current auth flow and list risky edge cases. (provider: claude, name: auth-review)
+- [ ] Reproduce the flaky login test and describe the failure mode. (provider: codex, mode: interactive, name: codex-flake)
+- [ ] Draft a short release-note entry for the auth fix. (provider: gemini, mode: oneshot, name: auth-notes)
 ```
 
 ### Run it
 
 ```bash
-# Initialize with Claude as the team lead
-team init compare --provider claude
-
-# Spawn workers from the task file
-team run compare-providers.md
-
-# Watch progress
+team init review --provider claude --working-dir ~/repos/myproject
+team run tasks.md
 team status
+team logs auth-review
+team logs codex-flake
+team logs auth-notes
+```
 
-# Compare output
+Why this works:
+
+- each task overrides provider and mode independently
+- worker names stay stable because the file sets `name: ...`
+- `team logs` can compare the outputs side by side after completion
+
+## Rerun completed tasks from the same file
+
+Use this when a worker finished but you want one more pass without creating a new worker name.
+
+### First pass
+
+```markdown
+## ~/repos/backend
+- [ ] Fix token refresh expiry handling (name: fix-refresh)
+- [ ] Add regression tests for refresh expiry (provider: claude, mode: oneshot, name: refresh-tests)
+```
+
+```bash
+team init backend --provider claude --working-dir ~/repos/backend
+team run tasks.md
+team sync tasks.md
+```
+
+### Rerun
+
+Leave the items unchecked or uncheck them again, then:
+
+```bash
+team run tasks.md --rerun
+```
+
+What happens:
+
+- `fix-refresh` reuses the same interactive worker window and receives the task text again
+- `refresh-tests` reuses the same worker window and resumes the Claude oneshot session if a `session_id` was captured
+
+## Seed a worker from an existing session
+
+If you already have a Claude or Gemini session ID from outside the current team, start a worker from that session directly.
+
+```bash
+team init docs --provider gemini --working-dir ~/repos/docs
+team spawn-worker \
+  --task "continue the migration checklist" \
+  --provider gemini \
+  --mode oneshot \
+  --name migration-checklist \
+  --resume-session abc123
+```
+
+Follow it up later:
+
+```bash
+team resume migration-checklist "tighten the acceptance criteria section"
+```
+
+## Inspect the lead and produce a standup
+
+Use this after a batch has been running for a while.
+
+```bash
+team logs lead
+team status lead -v
+team standup --timeout 180
+```
+
+This gives you three different views of the same lead session:
+
+- `team logs lead` for recent captured output
+- `team status lead -v` for a live pane tail
+- `team standup` for a markdown report written to `state/<team>/standup.md`
+
+## Compare providers on the same task
+
+This is the simplest way to do side-by-side provider evaluation.
+
+```markdown
+## .
+- [ ] Count all Python files under src/ and summarize the code layout. (provider: claude, name: claude-loc)
+- [ ] Count all Python files under src/ and summarize the code layout. (provider: codex, name: codex-loc)
+- [ ] Count all Python files under src/ and summarize the code layout. (provider: gemini, name: gemini-loc)
+```
+
+```bash
+team init compare --provider claude
+team run compare-providers.md
+team wait
 team logs claude-loc
 team logs codex-loc
+team logs gemini-loc
 ```
 
-### Scaling up
-
-For a more thorough comparison (e.g. a security audit across all three providers), see `demo/compare-providers-audit.md`:
+If you want the lead to synthesize the results:
 
 ```bash
-team run demo/compare-providers-audit.md
-
-# After all workers finish, ask the lead to synthesize:
-team "Review the output from all workers with 'team logs'. Compare the findings \
-and write a consolidated report."
-```
-
----
-
-## Code review with multiple reviewers
-
-Assign the same PR or diff to multiple agents for independent reviews, then have the lead merge the feedback.
-
-### Task file
-
-Create `multi-review.md`:
-
-```markdown
-# Code Review — PR #42
-
-## ~/repos/myproject
-- [ ] Review the changes in PR #42 (run 'gh pr diff 42'). Focus on correctness and edge cases. List any bugs. (provider: claude, name: review-correctness)
-- [ ] Review the changes in PR #42 (run 'gh pr diff 42'). Focus on code style, naming, and readability. Suggest improvements. (provider: codex, name: review-style)
-- [ ] Review the changes in PR #42 (run 'gh pr diff 42'). Focus on performance and security. Flag any concerns. (provider: gemini, name: review-security)
-```
-
-```bash
-team init review --provider claude --working-dir ~/repos/myproject
-team run multi-review.md
-
-# After all are done:
-team "All reviewers are done. Compile the feedback from 'team logs review-correctness', \
-'team logs review-style', and 'team logs review-security' into a single review \
-comment. Post it to PR #42 using 'gh pr comment 42 --body <comment>'."
-```
-
----
-
-## Parallel test investigation
-
-When a CI run has multiple test failures, assign each failure to a separate worker:
-
-### Task file
-
-Create `fix-tests.md`:
-
-```markdown
-# Fix failing tests
-
-## ~/repos/backend
-- [ ] Fix the failing test in tests/test_auth.py::test_login_expired_token. Run the test to confirm. (name: fix-expired-token)
-- [ ] Fix the failing test in tests/test_api.py::test_rate_limiting. Run the test to confirm. (name: fix-rate-limit)
-- [ ] Fix the failing test in tests/test_db.py::test_migration_rollback. Run the test to confirm. (name: fix-rollback)
-```
-
-```bash
-team init fixci --provider claude --working-dir ~/repos/backend
-team run fix-tests.md
-
-# Monitor until all are done
-team status
-
-# Have the lead verify nothing else broke
-team "All test fixes are in. Run the full test suite with 'pytest' and report \
-if anything else broke. If all green, commit the fixes."
-```
-
----
-
-## Multi-window dashboard
-
-Monitor all workers at once with a tiled tmux view:
-
-```bash
-team init myproject --provider claude --working-dir ~/repos/myproject
-team run tasks.md
-
-# Open a tiled dashboard showing all workers side by side
-team attach --multi
-```
-
-Each pane is a real interactive tmux pane — you can scroll, resize, and interact with workers directly. Running `team attach --multi` again re-attaches without modifying the layout.
-
-Use `Ctrl-b d` to detach. Run `team attach` to switch back to individual tabs.
-
----
-
-## Interactive lead session
-
-The most hands-on way to use agentic-team is to attach to the lead's tmux window and talk to it directly. The lead runs Claude Code, so you can use slash commands and natural language interchangeably.
-
-### Setup
-
-```bash
-# Start a team
-team init myproject --provider claude --working-dir ~/repos/myproject
-
-# Attach to the lead's session
-team attach
-```
-
-You're now inside the lead's Claude Code session.
-
-### Using `/team` inside the lead session
-
-The lead has a `/team` skill that maps your requests to `team` CLI commands. Use it like this:
-
-```
-# Run tasks from a file
-/team run demo/tasks.md
-
-# Check on workers
-/team status
-
-# View a worker's output
-/team logs fix-auth
-
-# Send a follow-up to a worker
-/team send fix-auth "also handle token refresh"
-
-# Spawn a worker manually
-/team spawn --task "Add tests for src/auth.py" --name add-tests
-
-# Resume a completed worker
-/team resume fix-auth "now refactor what you wrote"
-```
-
-When you say `/team run <file>`, the lead will:
-
-1. Run `team run <file>` to spawn workers from the task file
-2. Poll `team status` periodically until all workers finish
-3. Review output with `team logs` for each worker
-4. Summarize results back to you
-
-### Freeform delegation
-
-You can also give the lead a high-level goal and let it break down the work:
-
-```
-/team I need to add OAuth2 login support. One worker should handle the backend
-(routes, token validation), one should handle the frontend (login button,
-callback page), and one should write tests.
-```
-
-The lead will autonomously:
-
-1. Spawn workers with descriptive names and self-contained prompts
-2. Poll `team status` to track progress
-3. Review output with `team logs`
-4. Send follow-ups if a worker needs correction
-5. Report back when everything is complete
-
-### Detaching and reattaching
-
-Use `Ctrl-b d` to detach from the tmux session at any time. Workers keep running in the background. Reattach with:
-
-```bash
-team attach              # back to lead
-team attach -w fix-auth  # jump to a specific worker
+team "Read team logs for claude-loc, codex-loc, and gemini-loc. Summarize the differences."
 ```
