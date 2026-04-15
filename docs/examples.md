@@ -129,22 +129,74 @@ Use `Ctrl-b d` to detach. Run `team attach` to switch back to individual tabs.
 
 ## Interactive lead session
 
-Instead of task files, let the team lead handle everything. Just give it a high-level goal:
+The most hands-on way to use agentic-team is to attach to the lead's tmux window and talk to it directly. The lead runs Claude Code, so you can use slash commands and natural language interchangeably.
+
+### Setup
 
 ```bash
-team init build --provider claude --working-dir ~/repos/myproject
+# Start a team
+team init myproject --provider claude --working-dir ~/repos/myproject
 
-team "I need to add OAuth2 login support. Break this into subtasks and spawn \
-workers for each. Use interactive mode so you can send follow-ups if needed. \
-One worker should handle the backend (routes, token validation), one should \
-handle the frontend (login button, callback page), and one should write tests. \
-Use 'team status' to monitor and 'team logs <name>' to review output."
+# Attach to the lead's session
+team attach
+```
+
+You're now inside the lead's Claude Code session.
+
+### Using `/team` inside the lead session
+
+The lead has a `/team` skill that maps your requests to `team` CLI commands. Use it like this:
+
+```
+# Run tasks from a file
+/team run demo/tasks.md
+
+# Check on workers
+/team status
+
+# View a worker's output
+/team logs fix-auth
+
+# Send a follow-up to a worker
+/team send fix-auth "also handle token refresh"
+
+# Spawn a worker manually
+/team spawn --task "Add tests for src/auth.py" --name add-tests
+
+# Resume a completed worker
+/team resume fix-auth "now refactor what you wrote"
+```
+
+When you say `/team run <file>`, the lead will:
+
+1. Run `team run <file>` to spawn workers from the task file
+2. Poll `team status` periodically until all workers finish
+3. Review output with `team logs` for each worker
+4. Summarize results back to you
+
+### Freeform delegation
+
+You can also give the lead a high-level goal and let it break down the work:
+
+```
+/team I need to add OAuth2 login support. One worker should handle the backend
+(routes, token validation), one should handle the frontend (login button,
+callback page), and one should write tests.
 ```
 
 The lead will autonomously:
 
-1. Spawn three workers with descriptive names
+1. Spawn workers with descriptive names and self-contained prompts
 2. Poll `team status` to track progress
 3. Review output with `team logs`
 4. Send follow-ups if a worker needs correction
 5. Report back when everything is complete
+
+### Detaching and reattaching
+
+Use `Ctrl-b d` to detach from the tmux session at any time. Workers keep running in the background. Reattach with:
+
+```bash
+team attach              # back to lead
+team attach -w fix-auth  # jump to a specific worker
+```
