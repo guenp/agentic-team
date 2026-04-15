@@ -326,15 +326,23 @@ def attach(window: str | None, multi: bool) -> None:
             f"tmux session {team.tmux_session!r} not found."
         )
 
+    state_dir = config.STATE_DIR / team.name
+
     if multi:
+        # Break any existing multi layout first
+        tmux.break_multi(state_dir)
         workers = config.load_workers(team.name)
         targets = [w.name for w in workers if w.status == "running"]
         if not targets:
             targets = [w.name for w in workers]
         if not targets:
             raise click.ClickException("No workers to display.")
-        tmux.multi_attach(targets)
+        tmux.multi_attach(targets, state_dir)
     else:
+        # Restore individual windows if currently in multi layout
+        restored = tmux.break_multi(state_dir)
+        if restored:
+            click.echo(f"Restored {len(restored)} windows.")
         # Support partial name matching for window
         if window:
             workers = config.load_workers(team.name)

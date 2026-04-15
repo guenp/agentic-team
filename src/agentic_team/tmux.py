@@ -243,72 +243,77 @@ class TmuxOrchestrator:
             "-t", self.session_name,
         ])
 
-    def multi_attach(self, targets: list[str]) -> None:
-        """Create a tiled dashboard window showing multiple workers and attach.
+    def multi_attach(self, targets: list[str], state_dir: Path) -> None:
+        """Join worker panes into a single tiled window and attach.
 
-        Each target gets a pane with a live-updating view of its output.
+        Uses ``tmux join-pane`` to move real worker panes into the first
+        worker's window, then applies a tiled layout.  The original
+        window names are saved to *state_dir* so ``break_multi`` can
+        restore them later.
         """
         if not targets:
             return
+        if len(targets) == 1:
+            self.attach(targets[0])
+            return
 
-        multi_window = "multi"
+        host = targets[0]
 
-        # Kill any existing multi window
-        self.kill_window(multi_window)
-
-        # Create the multi window with the first target's live view
-        cmd = self._watch_cmd(targets[0])
-        self._run([
-            "tmux", "new-window",
-            "-t", self.session_name,
-            "-n", multi_window,
-            "bash", "-c", cmd,
-        ])
-
-        # Split for each additional target using -h (horizontal split
-        # = vertical divider) so panes sit side-by-side in a grid.
+        # Join each subsequent worker into the host window
         for target in targets[1:]:
-            cmd = self._watch_cmd(target)
             self._run([
-                "tmux", "split-window",
+                "tmux", "join-pane",
                 "-h",
-                "-t", f"{self.session_name}:{multi_window}",
-                "bash", "-c", cmd,
-            ])
+                "-s", f"{self.session_name}:{target}",
+                "-t", f"{self.session_name}:{host}",
+            ], check=False)
 
-        # Apply layout: even-horizontal for 2 panes (clean side-by-side),
-        # tiled for 3+ (automatic grid).
-        layout = "even-horizontal" if len(targets) == 2 else "tiled"
+        # Apply tiled layout
         self._run([
             "tmux", "select-layout",
-            "-t", f"{self.session_name}:{multi_window}",
-            layout,
+            "-t", f"{self.session_name}:{host}",
+            "tiled",
         ])
 
-        # Attach to the multi window
-        self.attach(multi_window)
+        # Persist the join order so break_multi can undo it
+        multi_file = state_dir / "multi_targets"
+        multi_file.parent.mkdir(parents=True, exist_ok=True)
+        multi_file.write_text("\n".join(targets))
 
-    def _watch_cmd(self, target: str) -> str:
-        """Build a shell command that live-streams a pane's output.
+        self.attach(host)
 
-        Flicker-free: cursor-home → overwrite → erase-below.
-        Each line is truncated *and* padded to the dashboard pane width
-        so overwriting is exact — no leftover chars, no wrapping.
-        Height is capped to the pane height so content always fits.
+    def break_multi(self, state_dir: Path) -> list[str]:
+        """Undo a previous ``multi_attach`` — break panes back into
+        their own windows.
+
+        Returns the list of restored worker names, or an empty list if
+        there was nothing to undo.
         """
-        session_target = shlex.quote(f"{self.session_name}:{target}")
-        fit_script = Path(__file__).parent / "_pane_fit.py"
-        return (
-            f"tput clear; "
-            f"while true; do "
-            f"H=$(($(tput lines) - 1)); "
-            f"W=$(tput cols); "
-            f"printf '\\033[H\\033[1;36m=== {target} ===\\033[K\\033[0m\\n'; "
-            f"tmux capture-pane -t {session_target} -p -J "
-            f"| python3 {shlex.quote(str(fit_script))} \"$W\" \"$H\"; "
-            f"printf '\\033[J'; "
-            f"sleep 1; done"
-        )
+        multi_file = state_dir / "multi_targets"
+        if not multi_file.exists():
+            return []
+
+        targets = multi_file.read_text().strip().splitlines()
+        if len(targets) < 2:
+            multi_file.unlink(missing_ok=True)
+            return []
+
+        host = targets[0]
+
+        # Break each non-host pane back into its own window.
+        # Always break pane index 1 (the next non-host pane), since
+        # indices shift down after each break.  Use -s (source pane)
+        # and -n (new window name) to restore the original name.
+        for target in targets[1:]:
+            self._run([
+                "tmux", "break-pane",
+                "-d",
+                "-s", f"{self.session_name}:{host}.1",
+                "-n", target,
+            ], check=False)
+
+        multi_file.unlink(missing_ok=True)
+        return targets
 
     # ── Internals ────────────────────────────────────────────────
 
