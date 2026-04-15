@@ -22,7 +22,7 @@ User ──> team CLI ──> tmux session
 
 ## Installation
 
-Requires Python 3.13+ and [tmux](https://github.com/tmux/tmux).
+Requires Python 3.11+ and [tmux](https://github.com/tmux/tmux).
 
 ```bash
 pip install agentic-team
@@ -42,10 +42,43 @@ You'll also need at least one agent CLI installed:
 - [Codex](https://github.com/openai/codex) (`codex`)
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
 
+## 5-minute first run
+
+1. Install `tmux` and `agentic-team`.
+2. Install one provider CLI from its official docs.
+3. Authenticate that provider.
+4. Verify the environment with `team doctor`.
+5. Start the team.
+
+```bash
+# tmux is required
+brew install tmux
+# or: sudo apt install tmux
+
+# install one provider CLI
+# Claude Code: https://docs.anthropic.com/en/docs/claude-code
+# Codex CLI:   https://github.com/openai/codex
+# Gemini CLI:  https://github.com/google-gemini/gemini-cli
+
+# authenticate the provider you plan to use
+claude auth login
+# or: codex login
+# Gemini: configure GEMINI_API_KEY / GOOGLE_API_KEY, or complete Gemini CLI auth
+
+# verify tmux + provider install/auth
+team doctor --provider claude
+
+# if exactly one provider is installed and authenticated, team init auto-detects it
+team init myproject --working-dir ~/repos/myproject
+# otherwise pass --provider claude|codex|gemini
+```
+
 ## Quick start
 
 ```bash
-# Initialize a team with Claude as the lead
+# Initialize a team (provider auto-detected when only one is viable)
+team init myproject --working-dir ~/repos/myproject
+# or choose explicitly
 team init myproject --provider claude --working-dir ~/repos/myproject
 
 # Send a task to the team lead
@@ -62,6 +95,9 @@ The team lead agent receives a system prompt that teaches it to spawn and manage
 ### Team lifecycle
 
 ```bash
+# Verify tmux, provider auth, and the active lead session
+team doctor [--provider claude|codex|gemini]
+
 # Initialize a new team
 team init <name> [--provider claude|codex|gemini] [--model <model>]
                  [--working-dir <path>] [--max-workers 6]
@@ -183,7 +219,7 @@ Workers are named automatically from their task description: a task like "fix th
 |----------|-----|------------|---------|--------|
 | Claude   | `claude` | `--verbose` | `--print --verbose --output-format json` | `--resume <id>` |
 | Codex    | `codex` | *(default)* | `--quiet` | -- |
-| Gemini   | `gemini` | *(default)* | `--prompt` | -- |
+| Gemini   | `gemini` | *(default)* | `--prompt` | `--resume <id>` |
 
 ## License
 

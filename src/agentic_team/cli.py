@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import shlex
 import shutil
 import sys
 import warnings
@@ -16,10 +17,8 @@ from pathlib import Path
 import click
 
 from . import agents, config, names, status, taskfile
-from .models import PROVIDERS
-from .tmux import TmuxError, TmuxOrchestrator
-
-
+from .models import PROVIDERS, ProviderHealth, get_provider_health
+from .tmux import READY_TIMEOUT_SECONDS, TmuxError, TmuxOrchestrator, tmux_version
 
 
 # ── Custom group for bare `team "prompt"` support ────────────────
@@ -215,6 +214,183 @@ def _mark_worker_running(worker: config.WorkerState, task: str | None = None) ->
     worker.exit_code = None
 
 
+def _try_get_team(ctx: click.Context | None = None) -> config.TeamConfig | None:
+    """Get the requested or active team, returning None if there isn't one."""
+    ctx = ctx or click.get_current_context()
+    name = ctx.obj.get("team_name") if ctx.obj else None
+    if name:
+        try:
+            return config.load_team(name)
+        except FileNotFoundError:
+            raise click.ClickException(f"Team {name!r} not found.")
+
+    active = config.get_active_team_name()
+    if not active:
+        return None
+    try:
+        return config.load_team(active)
+    except FileNotFoundError:
+        return None
+
+
+def _ensure_tmux_available() -> str:
+    """Validate that tmux is installed and report its version."""
+    version = tmux_version()
+    if not version:
+        raise click.ClickException(
+            "tmux is required but was not found in PATH. "
+            "Install it first (`brew install tmux` or `sudo apt install tmux`)."
+        )
+    return version
+
+
+def _ensure_provider_ready(provider_name: str) -> ProviderHealth:
+    """Validate that a provider CLI is installed and authenticated."""
+    health = get_provider_health(provider_name)
+    if not health.installed:
+        raise click.ClickException(
+            f"Provider {provider_name!r} is not installed. {health.install_hint}"
+        )
+    if not health.authenticated:
+        detail = f" {health.detail}" if health.detail else ""
+        raise click.ClickException(
+            f"Provider {provider_name!r} is not authenticated.{detail} {health.login_hint}"
+        )
+    return health
+
+
+def _resolve_provider_choice(
+    provider_name: str | None,
+    *,
+    team: config.TeamConfig | None = None,
+) -> tuple[str, bool]:
+    """Resolve an explicit or auto-detected provider selection."""
+    if provider_name:
+        return provider_name, False
+    if team:
+        return team.provider, False
+
+    viable = []
+    for name in PROVIDERS:
+        health = get_provider_health(name)
+        if health.viable:
+            viable.append(name)
+
+    if len(viable) == 1:
+        return viable[0], True
+
+    if not viable:
+        lines = ["No viable providers found. Install and log in to at least one:"]
+        for name in PROVIDERS:
+            health = get_provider_health(name)
+            lines.append(f"  - {name}: {_provider_failure_hint(health)}")
+        raise click.ClickException("\n".join(lines))
+
+    providers = ", ".join(viable)
+    raise click.ClickException(
+        f"Multiple viable providers detected ({providers}). Pass --provider explicitly."
+    )
+
+
+def _provider_failure_hint(health: ProviderHealth) -> str:
+    """Render a concise install/login hint for an unhealthy provider."""
+    if not health.installed:
+        return health.install_hint
+    detail = f"{health.detail}. " if health.detail else ""
+    return f"{detail}{health.login_hint}"
+
+
+def _ensure_lead_started(
+    team: config.TeamConfig,
+    *,
+    wait_for_ready: bool = False,
+    timeout: int = READY_TIMEOUT_SECONDS,
+) -> TmuxOrchestrator:
+    """Validate that the active team's lead session is live."""
+    tmux = TmuxOrchestrator(team.tmux_session)
+    if not tmux.session_exists():
+        raise click.ClickException(
+            f"Lead session {team.tmux_session!r} is not running. Run 'team init {team.name}'."
+        )
+    if tmux.is_pane_dead("lead"):
+        raise click.ClickException(
+            f"Lead pane in session {team.tmux_session!r} exited. Restart with 'team init {team.name}'."
+        )
+    if wait_for_ready:
+        ready, output = tmux.wait_until_ready("lead", team.provider, timeout=timeout)
+        if not ready:
+            detail = _pane_summary(output)
+            raise click.ClickException(
+                f"Lead agent for provider {team.provider!r} did not reach a ready banner "
+                f"within {timeout}s.{detail}"
+            )
+    return tmux
+
+
+def _pane_summary(output: str) -> str:
+    """Summarize recent pane output for startup failures."""
+    if not output.strip():
+        return ""
+    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    tail = " | ".join(lines[-4:])
+    return f" Recent pane output: {tail}"
+
+
+def _format_flag_list(flags: list[str]) -> str:
+    """Render launch flags as a shell-friendly string."""
+    return shlex.join(flags) if flags else "(none)"
+
+
+def _startup_failure_message(
+    role: str,
+    provider_name: str,
+    error: Exception,
+    recent_output: str = "",
+) -> str:
+    """Format a consistent startup failure message."""
+    health = get_provider_health(provider_name)
+    detail = f" {_pane_summary(recent_output)}" if recent_output else ""
+    provider_hint = ""
+    if not health.viable:
+        provider_hint = f" {_provider_failure_hint(health)}"
+    return f"{role} startup failed: {error}.{provider_hint}{detail}"
+
+
+@app.command()
+@click.option(
+    "--provider", "-p",
+    default=None,
+    type=click.Choice(sorted(PROVIDERS.keys())),
+    help="Provider to verify. Defaults to the active team provider or auto-detect.",
+)
+def doctor(provider: str | None) -> None:
+    """Verify tmux, provider auth, and the active lead session."""
+    ctx = click.get_current_context()
+    explicit_team = bool(ctx.obj and ctx.obj.get("team_name"))
+    team = _try_get_team()
+    provider_name, auto_detected = _resolve_provider_choice(provider, team=team)
+    version = _ensure_tmux_available()
+    health = _ensure_provider_ready(provider_name)
+
+    click.echo("Doctor checks")
+    click.echo(f"  tmux:      {version}")
+    click.echo(f"  provider:  {provider_name} ({health.cli_path})")
+    click.echo(f"  auth:      {health.detail}")
+
+    if team and (provider is None or explicit_team):
+        _ensure_lead_started(team)
+        click.echo(f"  lead:      session {team.tmux_session} is running")
+    elif team:
+        click.echo(f"  lead:      skipped (explicit provider check; active team is {team.name})")
+    else:
+        click.echo("  lead:      skipped (no active team yet)")
+
+    if auto_detected:
+        click.echo(f"  default:   auto-detected {provider_name}")
+
+
 # ── team init ────────────────────────────────────────────────────
 
 
@@ -222,9 +398,9 @@ def _mark_worker_running(worker: config.WorkerState, task: str | None = None) ->
 @click.argument("name")
 @click.option(
     "--provider", "-p",
-    default="claude",
+    default=None,
     type=click.Choice(sorted(PROVIDERS.keys())),
-    help="Team lead agent provider.",
+    help="Team lead agent provider. Auto-detected when only one viable provider is available.",
 )
 @click.option("--model", "-m", default=None, help="Model name (e.g. opus, o4-mini).")
 @click.option(
@@ -248,7 +424,7 @@ def _mark_worker_running(worker: config.WorkerState, task: str | None = None) ->
 )
 def init(
     name: str,
-    provider: str,
+    provider: str | None,
     model: str | None,
     worker_mode: str,
     permissions: str,
@@ -256,9 +432,13 @@ def init(
     working_dir: str,
 ) -> None:
     """Initialize a new team and start the team lead agent."""
+    provider_name, auto_detected = _resolve_provider_choice(provider)
+    _ensure_tmux_available()
+    _ensure_provider_ready(provider_name)
+
     team = config.TeamConfig(
         name=name,
-        provider=provider,
+        provider=provider_name,
         model=model,
         worker_mode=worker_mode,
         permissions=permissions,
@@ -311,11 +491,22 @@ def init(
         if tmux.session_exists():
             tmux.kill_session()
         rollback.callback(_safe_kill_session, tmux)
-        tmux.create_session(working_dir, lead_cmd)
+        tmux.create_session(
+            working_dir,
+            lead_cmd,
+            provider_name=team.provider,
+            timeout=READY_TIMEOUT_SECONDS,
+        )
         rollback.pop_all()
 
     click.echo(f"Team {name!r} initialized.")
-    click.echo(f"  Provider: {provider}" + (f" ({model})" if model else ""))
+    provider_label = provider_name + (f" ({model})" if model else "")
+    if auto_detected:
+        provider_label += " (auto-detected)"
+    click.echo(f"  Provider: {provider_label}")
+    click.echo(f"  Lead flags: {_format_flag_list(agents.lead_runtime_flags(team))}")
+    if team.provider != "claude":
+        click.echo(f"  Claude worker permission mode: {team.permissions}")
     click.echo(f"  Session:  {team.tmux_session}")
     click.echo(f"  Workdir:  {working_dir}")
     click.echo(f"\nRun 'team attach' to connect, or 'team \"your prompt\"' to send a task.")
@@ -397,6 +588,8 @@ def spawn_worker(
     mode = mode or team.worker_mode
     provider = provider or team.provider
     model = model or team.model
+    _ensure_tmux_available()
+    _ensure_provider_ready(provider)
 
     # Generate name
     existing_names = [w.name for w in workers]
@@ -444,12 +637,7 @@ def spawn_worker(
         )
 
     # Spawn in tmux
-    tmux = TmuxOrchestrator(team.tmux_session)
-    tmux.ensure_available()
-    if not tmux.session_exists():
-        raise click.ClickException(
-            f"tmux session {team.tmux_session!r} not found. Run 'team init' first."
-        )
+    tmux = _ensure_lead_started(team)
     state_dir = config.STATE_DIR / team.name
     # For interactive workers, send the task as an initial prompt after the agent starts.
     # For oneshot (including resume), the prompt is baked into the command.
@@ -479,6 +667,8 @@ def spawn_worker(
             worker_cmd,
             workdir,
             state_dir,
+            provider_name=provider,
+            mode=mode,
             initial_prompt=initial_prompt,
         )
         rollback.pop_all()
@@ -546,7 +736,14 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
                 tmux.send_shell_command(matched, resume_cmd, state_dir=state_dir)
             else:
                 rollback.callback(_safe_kill_window, tmux, matched)
-                tmux.spawn_worker(matched, resume_cmd, team.working_dir, state_dir)
+                tmux.spawn_worker(
+                    matched,
+                    resume_cmd,
+                    team.working_dir,
+                    state_dir,
+                    provider_name=worker.provider,
+                    mode="oneshot",
+                )
             rollback.pop_all()
         click.echo(f"Resumed {matched} with session {worker.session_id[:8]}...")
     else:
@@ -1310,12 +1507,8 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
             click.echo(f"    worker={spec.worker_name}  dir={spec.workdir}  provider={spec.provider}  mode={spec.mode}")
         return
 
-    tmux = TmuxOrchestrator(team.tmux_session)
-    tmux.ensure_available()
-    if not tmux.session_exists():
-        raise click.ClickException(
-            f"tmux session {team.tmux_session!r} not found. Run 'team init' first."
-        )
+    _ensure_tmux_available()
+    tmux = _ensure_lead_started(team)
 
     live_windows = {window.name for window in tmux.list_windows()}
     session_log_dir = config.current_session_log_dir(team.name)
@@ -1324,6 +1517,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
 
     actions: list[_RunAction] = []
     for spec in plan_specs:
+        _ensure_provider_ready(spec.provider)
         log_path = session_log_dir / f"{spec.worker_name}.log"
         if spec.kind == "rerun" and spec.existing_worker is not None:
             ew = spec.existing_worker
@@ -1427,6 +1621,8 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
                     action.command,
                     action.workdir,
                     state_dir,
+                    provider_name=action.provider,
+                    mode=action.mode,
                     initial_prompt=action.initial_prompt,
                 )
                 spawned += 1
@@ -1444,27 +1640,19 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
                     tmux.send_shell_command(action.worker_name, action.command, state_dir=state_dir)
                 else:
                     rollback.callback(_safe_kill_window, tmux, action.worker_name)
-                    tmux.spawn_worker(action.worker_name, action.command, action.workdir, state_dir)
+                    tmux.spawn_worker(
+                        action.worker_name,
+                        action.command,
+                        action.workdir,
+                        state_dir,
+                        provider_name=action.provider,
+                        mode=action.mode,
+                    )
                 resumed += 1
                 click.echo(f"  {action.worker_name} | {action.task} (rerun)")
                 continue
 
         rollback.pop_all()
-
-    # Try to deliver pending prompts (agents may need a moment to start)
-    import time
-    if spawned:
-        click.echo("\nWaiting for agents to start...")
-        for _ in range(10):
-            time.sleep(1)
-            run_state_dir = config.STATE_DIR / team.name
-            delivered = tmux.deliver_pending_prompts(run_state_dir)
-            if delivered:
-                click.echo(f"  Delivered prompts to: {', '.join(delivered)}")
-            # Check if all pending prompts are delivered
-            pending_dir = run_state_dir / "pending_prompts"
-            if not pending_dir.exists() or not list(pending_dir.iterdir()):
-                break
 
     parts = []
     if spawned:

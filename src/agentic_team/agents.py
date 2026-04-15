@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from .config import TeamConfig
-from .models import get_provider
+from .models import describe_provider_flags, get_provider
 
 # ── System prompt ────────────────────────────────────────────────
 
@@ -155,15 +155,7 @@ def build_lead_command(
     """Build the shell command to start the team lead agent (interactive)."""
     provider = get_provider(config.provider)
     parts: list[str] = [provider.cli_command]
-
-    if config.model:
-        parts.extend(["--model", config.model])
-
-    parts.extend(provider.interactive_args)
-
-    # Permission mode (claude-specific)
-    if config.provider == "claude" and config.permissions != "default":
-        parts.extend(["--permission-mode", config.permissions])
+    parts.extend(lead_runtime_flags(config))
 
     # System prompt injection
     if provider.system_prompt_file_flag:
@@ -188,18 +180,12 @@ def build_worker_command(
     """Build the shell command to start a worker agent."""
     provider = get_provider(provider_name)
     parts: list[str] = [provider.cli_command]
-
-    if model:
-        parts.extend(["--model", model])
-
-    if mode == "oneshot":
-        parts.extend(provider.oneshot_args)
-    else:
-        parts.extend(provider.interactive_args)
-
-    # Permission mode (claude-specific)
-    if provider_name == "claude" and permissions != "default":
-        parts.extend(["--permission-mode", permissions])
+    parts.extend(worker_runtime_flags(
+        provider_name,
+        mode=mode,
+        model=model,
+        permissions=permissions,
+    ))
 
     # System prompt for worker context
     if provider.system_prompt_flag:
@@ -239,3 +225,29 @@ def build_resume_command(
     if mode == "oneshot":
         parts.append(prompt)
     return _build_command_with_logging(parts, provider_name, mode, log_path)
+
+
+def lead_runtime_flags(config: TeamConfig) -> list[str]:
+    """Return the provider/runtime flags used for the lead session."""
+    return describe_provider_flags(
+        config.provider,
+        model=config.model,
+        permissions=config.permissions,
+        mode="interactive",
+    )
+
+
+def worker_runtime_flags(
+    provider_name: str,
+    *,
+    mode: str,
+    model: str | None,
+    permissions: str,
+) -> list[str]:
+    """Return the provider/runtime flags used for a worker launch."""
+    return describe_provider_flags(
+        provider_name,
+        model=model,
+        permissions=permissions,
+        mode=mode,
+    )

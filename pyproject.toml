@@ -3,7 +3,7 @@ name = "agentic-team"
 version = "0.1.0"
 description = "Orchestrate teams of AI coding agents in tmux"
 license = "MIT"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "click>=8.1",
     "rich>=13.0",
