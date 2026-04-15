@@ -32,11 +32,23 @@ cd agentic-team
 uv sync
 ```
 
+## Verify your environment
+
+Before creating a team, confirm that tmux and your chosen provider are ready:
+
+```bash
+team doctor --provider claude
+```
+
+`team doctor` checks that tmux is installed, the provider CLI is on `PATH`, and authentication is valid. If you already have an active team it also verifies the lead session is running.
+
 ## Start your first team
 
 ```bash
 team init myproject --provider claude --working-dir ~/repos/myproject
 ```
+
+If exactly one provider is installed and authenticated, `--provider` can be omitted and `team init` will auto-detect it.
 
 This does four things:
 

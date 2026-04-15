@@ -70,6 +70,17 @@ Notes:
 - `team status lead` without `-v` still prints the normal full team table; the `WORKER_NAME` argument only affects verbose mode.
 - `team standup` asks the lead to write `~/.agentic-team/state/<team>/standup.md`, then either renders that file or falls back to pane capture if the file never appears.
 
+## Pre-flight check
+
+Run `team doctor` to verify tmux, provider auth, and (if applicable) the active lead session in a single command:
+
+```bash
+team doctor
+team doctor --provider claude
+```
+
+This is the fastest way to rule out environment issues before debugging further.
+
 ## Common recovery steps
 
 ### `No active team. Run 'team init <name>' to create one.`

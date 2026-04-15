@@ -10,7 +10,9 @@ For every provider you plan to use:
 2. Launch that CLI once outside `agentic-team` and complete its own login/auth flow.
 3. Verify the binary name matches what `agentic-team` calls: `claude`, `codex`, or `gemini`.
 
-If a provider CLI is missing or unauthenticated, `agentic-team` will fail when tmux tries to launch that command.
+Run `team doctor --provider <name>` to verify that a provider is installed and authenticated before creating a team. The doctor command uses `ProviderHealth` checks that probe the binary path and run a provider-specific auth test.
+
+If a provider CLI is missing or unauthenticated, `team init` and `team spawn-worker` will fail early with install or login hints rather than waiting for tmux to report a confusing error.
 
 ## Provider matrix
 

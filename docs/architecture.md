@@ -12,7 +12,7 @@ team CLI
   ├── tmux.py        All tmux subprocess interaction
   ├── status.py      Worker completion detection and state refresh
   ├── taskfile.py    Markdown task-file parsing and writeback
-  ├── models.py      Provider registry
+  ├── models.py      Provider registry and ProviderHealth checks
   └── names.py       Worker naming and prefix matching
 ```
 
@@ -42,6 +42,10 @@ State serialization uses `tomllib` for reads and `tomli_w` for writes.
 - input/output: `send-keys`, `capture-pane`
 - dashboard mode: `join-pane`, `break-pane`, `select-layout tiled`
 - terminal handoff: `os.execvp("tmux", ...)` for attach
+
+`TmuxSnapshot` is a per-refresh-cycle cache that stores window listings, pane-dead flags, resolved targets, and pane captures. Hot-path commands such as `team status` and `team wait` create a snapshot once per poll cycle and pass it through all status-checking functions so that repeated tmux subprocess calls are avoided.
+
+`capture_pane_safe(...)` is the preferred way to read pane content. It gracefully handles dead panes and missing windows, returning an empty string instead of raising.
 
 Two implementation details matter for runtime behavior:
 
@@ -106,6 +110,14 @@ This is why `team status` can change a newly launched worker from "waiting to st
 - optional resume flag
 - optional system-prompt flags
 - provider logging flags and logging environment variables
+
+### Provider health checking
+
+`ProviderHealth` is a frozen dataclass that records whether a provider CLI is installed, authenticated, and viable (both installed and authenticated). `get_provider_health(name)` resolves the CLI binary via `shutil.which`, then runs a provider-specific auth probe.
+
+`get_viable_providers()` returns only providers that pass both checks. `team init` uses this list for auto-detection when `--provider` is omitted: if exactly one provider is viable, it is selected automatically; if zero or more than one are viable, the CLI raises a clear error.
+
+`team doctor` surfaces the same health information interactively so users can diagnose missing installs or expired auth before creating a team.
 
 Current provider-specific behavior is summarized in [Providers](providers.md).
 

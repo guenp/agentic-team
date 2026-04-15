@@ -24,6 +24,24 @@ Notes:
 
 ## Team lifecycle
 
+### `team doctor`
+
+```text
+team doctor [OPTIONS]
+```
+
+| Option | Meaning |
+|--------|---------|
+| `-p, --provider [claude\|codex\|gemini]` | Provider to verify. Defaults to the active team provider or auto-detect. |
+
+Verifies:
+
+1. tmux is installed and reports its version.
+2. The chosen provider CLI is on `PATH` and authenticated (`ProviderHealth` check).
+3. If an active team exists (and no explicit `--provider` override), the lead tmux session is alive.
+
+Use `team doctor` after installation and before `team init` to catch missing dependencies early.
+
 ### `team init`
 
 ```text
@@ -32,7 +50,7 @@ team init [OPTIONS] NAME
 
 | Option | Meaning |
 |--------|---------|
-| `-p, --provider [claude\|codex\|gemini]` | Team lead provider. Default `claude`. |
+| `-p, --provider [claude\|codex\|gemini]` | Team lead provider. Auto-detected when exactly one viable provider is found; required when multiple are available. |
 | `-m, --model TEXT` | Lead model override. No default (uses the provider's own default). |
 | `--worker-mode [oneshot\|interactive]` | Default mode for new workers. Default `interactive`. |
 | `--permissions [auto\|default\|dangerously-skip-permissions]` | Permission mode saved in team config. Default `auto`. |
