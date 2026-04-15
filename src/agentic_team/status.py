@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -202,34 +203,70 @@ def _is_oneshot_done(
     return False
 
 
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][\x20-\x7e]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Z]"
+)
+
+
 def _is_interactive_idle(
     worker: WorkerState, tmux: TmuxOrchestrator,
     state_dir: Path | None = None,
 ) -> bool:
     """Detect if an interactive worker has finished its task and is idle.
 
-    Claude Code shows "esc to interrupt" in its status bar while working,
-    and removes it when idle. This is the most reliable signal.
+    Uses provider-specific signals read from the pipe-pane log file.
     """
+    log_path = log_dir_for_team(worker.name.rsplit("-", 1)[0] if "-" in worker.name else worker.name)
+    # Derive team name from the config that called us — but we don't have
+    # it here, so fall back to reading the log via state_dir.
+    if state_dir:
+        team_name = state_dir.name
+        log_path = log_dir_for_team(team_name) / f"{worker.name}.log"
+    else:
+        return False
+
+    if not log_path.exists():
+        return False
+
+    # Read the tail of the log file (last 8KB is plenty for status detection)
     try:
-        output = tmux.capture_pane(worker.tmux_window, lines=80, state_dir=state_dir)
-    except Exception:
+        with open(log_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            # Too small — agent probably hasn't started working yet
+            if size < 1024:
+                return False
+            f.seek(max(0, size - 8192))
+            raw = f.read().decode("utf-8", errors="replace")
+    except OSError:
         return False
 
-    # Only check the LAST few lines for "esc to interrupt" — the status
-    # bar is at the bottom of the pane. Old renders in scrollback may
-    # still contain "esc to interrupt" from when the agent was working.
-    tail = "\n".join(output.splitlines()[-5:])
-    # Use a shorter prefix — the full text may be truncated by pane width
-    if "esc to inter" in tail:
-        return False
+    tail = _ANSI_RE.sub("", raw).replace("\r", "")
 
-    # The agent is not actively working. Confirm it actually did work
-    # (not just sitting at a fresh prompt that hasn't received input yet).
-    # Only agent output markers count — task text alone just means the
-    # prompt was sent, not that the agent processed it.
-    if "\u23fa" in output or "⎿" in output:
-        return True
+    if worker.provider == "claude":
+        # Claude Code shows "esc to interrupt" while working.
+        # Check the last portion of output for it.
+        last_chunk = tail[-2000:]
+        if "esc to inter" in last_chunk:
+            return False
+        # Confirm the agent actually produced output (not just sitting
+        # at a fresh prompt).
+        if "\u23fa" in tail or "⎿" in tail:
+            return True
+
+    elif worker.provider == "codex":
+        # Codex shows "Worked for Xm Ys" when it finishes a task.
+        if "Worked for" in tail:
+            return True
+
+    elif worker.provider == "gemini":
+        # Gemini shows "Type your message" when idle at its input prompt.
+        # We read the last 8KB of the log — if "Type your message" appears
+        # near the end, the agent is idle.  The startup banner would be
+        # far earlier in any log where work was done.
+        last_chunk = tail[-2000:]
+        if "Type your message" in last_chunk:
+            return True
 
     return False
 
