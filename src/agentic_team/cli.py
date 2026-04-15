@@ -330,7 +330,7 @@ def status_cmd(worker_name: str | None, verbose: bool) -> None:
     st = status.get_team_status(team)
 
     if not verbose:
-        click.echo(status.format_status(st))
+        status.format_status(st)
         return
 
     tmux = TmuxOrchestrator(team.tmux_session)

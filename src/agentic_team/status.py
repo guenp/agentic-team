@@ -135,35 +135,58 @@ def get_team_status(config: TeamConfig) -> dict:
     }
 
 
-def format_status(status: dict) -> str:
-    """Pretty-print the team status."""
-    lines: list[str] = []
-    lines.append(f"Team: {status['team']} (session: {status['session']})")
+def format_status(status: dict) -> None:
+    """Pretty-print the team status using rich."""
+    from rich.console import Console
+    from rich.table import Table
+    from rich.text import Text
 
-    lead_str = "active" if status["lead_active"] else "inactive"
-    lines.append(f"Lead: {lead_str}")
+    console = Console()
+
+    # Header
+    lead_style = "green" if status["lead_active"] else "red"
+    lead_label = "active" if status["lead_active"] else "inactive"
+    header = Text()
+    header.append(f"Team: {status['team']}", style="bold")
+    header.append(f"  (session: {status['session']})  Lead: ")
+    header.append(lead_label, style=lead_style)
+    console.print(header)
 
     workers = status["workers"]
     if not workers:
-        lines.append("\nNo workers.")
-    else:
-        lines.append(f"\nWorkers ({len(workers)}):")
-        # Column widths
-        max_name = max(len(w["name"]) for w in workers)
-        max_prov = max(len(w["provider"]) for w in workers)
-        for w in workers:
-            name = w["name"].ljust(max_name)
-            prov = w["provider"].ljust(max_prov)
-            mode = w["mode"].ljust(11)
-            stat = w["status"].ljust(7)
-            elapsed = w["elapsed"]
-            task = w["task"]
-            if len(task) > 50:
-                task = task[:47] + "..."
-            line = f"  {name}  {prov}  {mode}  {stat}  {elapsed:>10}  {task}"
-            lines.append(line)
+        console.print("\nNo workers.", style="dim")
+        return
 
-    return "\n".join(lines)
+    table = Table(title=f"Workers ({len(workers)})", title_style="bold", show_edge=False, pad_edge=False)
+    table.add_column("Name", style="cyan")
+    table.add_column("Provider", style="dim")
+    table.add_column("Mode", style="dim")
+    table.add_column("Status")
+    table.add_column("Elapsed", justify="right", style="dim")
+    table.add_column("Task")
+
+    status_styles = {
+        "running": "bold yellow",
+        "done": "bold green",
+        "error": "bold red",
+        "pending": "dim",
+    }
+
+    for w in workers:
+        style = status_styles.get(w["status"], "")
+        task = w["task"]
+        if len(task) > 60:
+            task = task[:57] + "..."
+        table.add_row(
+            w["name"],
+            w["provider"],
+            w["mode"],
+            Text(w["status"], style=style),
+            w["elapsed"],
+            task,
+        )
+
+    console.print(table)
 
 
 def _is_oneshot_done(
