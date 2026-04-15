@@ -22,6 +22,7 @@ User ──> team CLI ──> tmux session
 
 ## Features
 
+- **Conversational delegation**: Talk to the lead agent like a project manager — it breaks down work, spawns workers, monitors progress, and synthesizes results
 - **Multi-provider**: Supports Claude Code, Codex, and Gemini CLI agents
 - **Parallel execution**: Workers run in isolated tmux windows with automatic logging
 - **Two worker modes**: Interactive (persistent, supports follow-ups) and oneshot (fire-and-forget)
