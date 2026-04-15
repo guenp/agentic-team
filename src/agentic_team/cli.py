@@ -322,11 +322,31 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
 
 
 @app.command("status")
-def status_cmd() -> None:
+@click.argument("worker_name", required=False)
+@click.option("--verbose", "-v", is_flag=True, help="Live tail of agent output. Press q to quit.")
+def status_cmd(worker_name: str | None, verbose: bool) -> None:
     """Show the status of the active team."""
     team = _get_team()
     st = status.get_team_status(team)
-    click.echo(status.format_status(st))
+
+    if not verbose:
+        click.echo(status.format_status(st))
+        return
+
+    tmux = TmuxOrchestrator(team.tmux_session)
+    state_dir = config.STATE_DIR / team.name
+    workers = config.load_workers(team.name)
+
+    # Resolve which workers to show
+    if worker_name:
+        matched = names.match_name(worker_name, [w.name for w in workers] + ["lead"])
+        if not matched:
+            raise click.ClickException(f"No worker matching {worker_name!r}")
+        targets = [matched]
+    else:
+        targets = [w.name for w in workers]
+
+    _status_live(team, tmux, state_dir, st, targets)
 
 
 # ── team standup ────────────────────────────────────────────────
@@ -460,19 +480,7 @@ def _standup_live(
 
     with Live(console=console, refresh_per_second=2, transient=True) as live:
         while time.time() - start < timeout:
-            # Show just the last few non-empty lines from the pane
-            try:
-                raw = tmux.capture_pane("lead", lines=30).rstrip()
-                tail = [
-                    l for l in raw.splitlines()
-                    if l.strip() and not l.strip().startswith("─")
-                    and "esc to inter" not in l
-                    and "auto mode" not in l
-                    and "shift+tab" not in l
-                ][-5:]
-                display = "\n".join(tail)
-            except Exception:
-                display = "(cannot capture pane)"
+            display = _pane_tail(tmux, "lead", n=5)
 
             elapsed = int(time.time() - start)
             live.update(Panel(
@@ -512,6 +520,118 @@ def _show_standup_result(tmux: TmuxOrchestrator, report_path: Path) -> None:
                     click.echo(line)
         except Exception:
             click.echo("Could not capture lead pane.")
+
+
+# ── Shared helpers for live pane display ─────────────────────────
+
+# Lines matching any of these are filtered from live pane tails.
+_CHROME_FILTERS = (
+    "esc to inter",
+    "auto mode",
+    "shift+tab",
+    "Use /skills",
+    "Type your message",
+    "% left",
+)
+
+
+def _pane_tail(
+    tmux: TmuxOrchestrator,
+    target: str,
+    n: int = 5,
+    state_dir: Path | None = None,
+) -> str:
+    """Capture the last *n* meaningful lines from a pane.
+
+    Strips blank lines, separator lines (───), and TUI chrome.
+    """
+    try:
+        raw = tmux.capture_pane(target, lines=30, state_dir=state_dir).rstrip()
+    except Exception:
+        return "(pane not available)"
+    lines = [
+        l for l in raw.splitlines()
+        if l.strip()
+        and not l.strip().startswith("─")
+        and not l.strip().startswith("▀")
+        and not l.strip().startswith("▄")
+        and not any(f in l for f in _CHROME_FILTERS)
+    ]
+    return "\n".join(lines[-n:]) if lines else "(no output)"
+
+
+def _status_live(
+    team: config.TeamConfig,
+    tmux: TmuxOrchestrator,
+    state_dir: Path,
+    st: dict,
+    targets: list[str],
+) -> None:
+    """Live-updating status with tailed pane output. Press q to quit."""
+    import select
+    import sys
+    import termios
+    import time
+    import tty
+
+    from rich.console import Console, Group
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.text import Text
+
+    console = Console()
+    status_colors = {"running": "yellow", "done": "green", "error": "red"}
+
+    # Set terminal to raw mode so we can detect 'q' without Enter
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+
+    try:
+        tty.setcbreak(fd)
+
+        with Live(console=console, refresh_per_second=2) as live:
+            while True:
+                # Check for 'q' keypress (non-blocking)
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch in ("q", "Q"):
+                        break
+
+                # Refresh status
+                st = status.get_team_status(team)
+                worker_map = {w["name"]: w for w in st["workers"]}
+
+                panels = []
+                for name in targets:
+                    w = worker_map.get(name, {})
+                    ws = w.get("status", "?")
+                    elapsed = w.get("elapsed", "")
+                    task = w.get("task", "")
+                    if len(task) > 60:
+                        task = task[:57] + "..."
+                    color = status_colors.get(ws, "white")
+
+                    tail = _pane_tail(tmux, name, n=5, state_dir=state_dir)
+
+                    header = Text()
+                    header.append(f"  {ws}", style=f"bold {color}")
+                    header.append(f"  {elapsed}", style="dim")
+                    header.append(f"  {task}", style="dim")
+
+                    panels.append(Panel(
+                        tail,
+                        title=f"[bold cyan]{name}[/bold cyan]",
+                        subtitle=header,
+                        border_style=color,
+                    ))
+
+                footer = Text("press q to quit", style="dim")
+                panels.append(footer)
+                live.update(Group(*panels))
+
+                time.sleep(0.5)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 def _render_markdown(text: str) -> None:
