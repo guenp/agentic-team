@@ -121,7 +121,9 @@ class TmuxOrchestrator:
                     )
                 )
                 if ready:
-                    self.send_keys(target, prompt)
+                    # TUI agents (Codex, Gemini) need a brief delay
+                    # between text input and Enter for the submit to register
+                    self.send_keys(target, prompt, delay=0.5)
                     prompt_file.unlink()
                     delivered.append(target)
             except Exception:
@@ -141,7 +143,7 @@ class TmuxOrchestrator:
 
     # ── Input / output ───────────────────────────────────────────
 
-    def send_keys(self, target: str, text: str) -> None:
+    def send_keys(self, target: str, text: str, delay: float = 0) -> None:
         """Send text to a tmux pane followed by Enter."""
         # Use literal flag (-l) to avoid tmux key interpretation,
         # then send Enter separately
@@ -150,6 +152,9 @@ class TmuxOrchestrator:
             "-t", f"{self.session_name}:{target}",
             "-l", text,
         ])
+        if delay > 0:
+            import time
+            time.sleep(delay)
         self._run([
             "tmux", "send-keys",
             "-t", f"{self.session_name}:{target}",
