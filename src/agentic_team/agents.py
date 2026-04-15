@@ -97,7 +97,6 @@ WORKER_WORKTREE_PROMPT = """\
 ## Git Worktree
 
 You are working in a git worktree on your own isolated branch: `{branch_name}`
-- Your worktree path is: {worktree_path}
 - Commit your work to your branch (`{branch_name}`)
 - NEVER push to or checkout the main branch
 - NEVER run `git push` to main or master
@@ -109,18 +108,14 @@ def build_worker_system_prompt(
     team_name: str,
     working_dir: str,
     branch_name: str | None = None,
-    worktree_path: str | None = None,
 ) -> str:
     """Generate the system prompt for a worker agent."""
     prompt = WORKER_SYSTEM_PROMPT.format(
         team_name=team_name,
         working_dir=working_dir,
     )
-    if branch_name and worktree_path:
-        prompt += WORKER_WORKTREE_PROMPT.format(
-            branch_name=branch_name,
-            worktree_path=worktree_path,
-        )
+    if branch_name:
+        prompt += WORKER_WORKTREE_PROMPT.format(branch_name=branch_name)
     return prompt
 
 
@@ -215,7 +210,7 @@ def build_worker_command(
     working_dir: str = "",
     log_path: Path | None = None,
     branch_name: str | None = None,
-    worktree_path: str | None = None,
+    worktree_name: str | None = None,
 ) -> str:
     """Build the shell command to start a worker agent."""
     provider = get_provider(provider_name)
@@ -227,12 +222,15 @@ def build_worker_command(
         mode=mode,
     ))
 
+    # Native worktree isolation (e.g. claude --worktree, gemini --worktree)
+    if worktree_name and provider.worktree_flag:
+        parts.extend([provider.worktree_flag, worktree_name])
+
     # System prompt for worker context
     if provider.system_prompt_flag:
         prompt = build_worker_system_prompt(
             team_name, working_dir,
             branch_name=branch_name,
-            worktree_path=worktree_path,
         )
         parts.extend([provider.system_prompt_flag, prompt])
 
