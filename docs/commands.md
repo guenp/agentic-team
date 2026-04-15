@@ -155,6 +155,14 @@ Stop a specific worker.
 team stop-worker <name>
 ```
 
+### `team clear`
+
+Remove completed workers from the status list. Useful after reviewing done workers to keep the status table clean.
+
+```bash
+team clear
+```
+
 ---
 
 ## Task files

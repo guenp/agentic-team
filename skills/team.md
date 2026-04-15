@@ -20,6 +20,7 @@ When the user invokes `/team <command>`, execute the corresponding `team` CLI co
 | `/team send <name> "msg"` | `team send-to-worker <name> "msg"` |
 | `/team resume <name> "msg"` | `team resume <name> "msg"` |
 | `/team stop <name>` | `team stop-worker <name>` |
+| `/team clear` | `team clear` (remove done workers from status list) |
 | `/team standup` | `team status`, then `team logs` for each worker, then summarize |
 
 If the user gives a freeform request (e.g. `/team fix all the TODOs`), break it down into tasks and spawn workers yourself.

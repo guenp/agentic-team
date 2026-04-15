@@ -36,6 +36,13 @@ existing Claude or Gemini session.
 - `team stop-worker <name>`
   Stop a specific worker.
 
+- `team clear`
+  Remove completed workers from the status list. Use after reviewing done \
+workers to keep the status table clean.
+
+- `team run <file>`
+  Spawn workers from a markdown task file.
+
 ## Guidelines
 
 - Break large tasks into independent, well-scoped subtasks.

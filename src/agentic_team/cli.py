@@ -1098,6 +1098,24 @@ def sync(task_file: str) -> None:
     click.echo(f"Synced {len(updates)} tasks ({done_count} completed).")
 
 
+# ── team clear ───────────────────────────────────────────────────
+
+
+@app.command()
+def clear() -> None:
+    """Remove completed workers from the status list."""
+    team = _get_team()
+    workers = config.load_workers(team.name)
+    before = len(workers)
+    remaining = [w for w in workers if w.status != "done"]
+    removed = before - len(remaining)
+    if removed == 0:
+        click.echo("No completed workers to clear.")
+        return
+    config.save_workers(team.name, remaining)
+    click.echo(f"Cleared {removed} completed worker(s). {len(remaining)} remaining.")
+
+
 # ── team stop ────────────────────────────────────────────────────
 
 
