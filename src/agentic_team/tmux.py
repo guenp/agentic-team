@@ -286,15 +286,19 @@ class TmuxOrchestrator:
     def _watch_cmd(self, target: str) -> str:
         """Build a shell command that live-streams a pane's output.
 
-        Refreshes every second.  Works on macOS and Linux (no ``watch``
-        dependency).
+        Flicker-free refresh: captures to a variable, moves cursor home,
+        prints each line with erase-to-EOL, then clears below.
         """
         session_target = shlex.quote(f"{self.session_name}:{target}")
         return (
+            f"EL=$(printf '\\033[K'); tput clear; "
             f"while true; do "
-            f"printf '\\033[H\\033[J'; "
-            f"printf '\\033[1;36m=== {target} ===\\033[0m\\n'; "
-            f"tmux capture-pane -t {session_target} -p -S -50; "
+            f"out=$(tmux capture-pane -t {session_target} -p -S -50); "
+            f"printf '\\033[H'; "
+            f"printf '\\033[1;36m=== {target} ===%s\\033[0m\\n' \"$EL\"; "
+            f"printf '%s\\n' \"$out\" "
+            f"| while IFS= read -r ln; do printf '%s%s\\n' \"$ln\" \"$EL\"; done; "
+            f"printf '\\033[J'; "
             f"sleep 1; done"
         )
 
