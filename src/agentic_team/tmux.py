@@ -43,6 +43,12 @@ class TmuxOrchestrator:
             "-x", "220",
             "-y", "50",
         ])
+        # Prevent tmux from renaming windows to the foreground process —
+        # we rely on stable window names for status tracking.
+        self._run([
+            "tmux", "set-option", "-t", self.session_name,
+            "allow-rename", "off",
+        ])
         # Start the team lead agent in the first window
         self.send_keys("lead", lead_command)
 
@@ -62,6 +68,11 @@ class TmuxOrchestrator:
             "-t", self.session_name,
             "-n", window_name,
             "-c", working_dir,
+        ])
+        self._run([
+            "tmux", "set-window-option",
+            "-t", f"{self.session_name}:{window_name}",
+            "automatic-rename", "off",
         ])
 
     def spawn_worker(
