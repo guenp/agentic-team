@@ -243,6 +243,61 @@ class TmuxOrchestrator:
             "-t", self.session_name,
         ])
 
+    def multi_attach(self, targets: list[str]) -> None:
+        """Create a tiled dashboard window showing multiple workers and attach.
+
+        Each target gets a pane with a live-updating view of its output.
+        """
+        if not targets:
+            return
+
+        multi_window = "multi"
+
+        # Kill any existing multi window
+        self.kill_window(multi_window)
+
+        # Create the multi window with the first target's live view
+        cmd = self._watch_cmd(targets[0])
+        self._run([
+            "tmux", "new-window",
+            "-t", self.session_name,
+            "-n", multi_window,
+            "bash", "-c", cmd,
+        ])
+
+        # Split for each additional target
+        for target in targets[1:]:
+            cmd = self._watch_cmd(target)
+            self._run([
+                "tmux", "split-window",
+                "-t", f"{self.session_name}:{multi_window}",
+                "bash", "-c", cmd,
+            ])
+            # Re-tile after each split to keep panes balanced
+            self._run([
+                "tmux", "select-layout",
+                "-t", f"{self.session_name}:{multi_window}",
+                "tiled",
+            ])
+
+        # Attach to the multi window
+        self.attach(multi_window)
+
+    def _watch_cmd(self, target: str) -> str:
+        """Build a shell command that live-streams a pane's output.
+
+        Refreshes every second.  Works on macOS and Linux (no ``watch``
+        dependency).
+        """
+        session_target = shlex.quote(f"{self.session_name}:{target}")
+        return (
+            f"while true; do "
+            f"printf '\\033[H\\033[J'; "
+            f"printf '\\033[1;36m=== {target} ===\\033[0m\\n'; "
+            f"tmux capture-pane -t {session_target} -p -S -50; "
+            f"sleep 1; done"
+        )
+
     # ── Internals ────────────────────────────────────────────────
 
     def _run(

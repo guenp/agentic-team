@@ -293,7 +293,8 @@ def status_cmd() -> None:
 
 @app.command()
 @click.option("--window", "-w", default=None, help="Window name to select.")
-def attach(window: str | None) -> None:
+@click.option("--multi", "-m", is_flag=True, help="Tiled dashboard showing all workers.")
+def attach(window: str | None, multi: bool) -> None:
     """Attach to the team's tmux session."""
     team = config.get_active_team()
     tmux = TmuxOrchestrator(team.tmux_session)
@@ -303,13 +304,21 @@ def attach(window: str | None) -> None:
             f"tmux session {team.tmux_session!r} not found."
         )
 
-    # Support partial name matching for window
-    if window:
+    if multi:
         workers = config.load_workers(team.name)
-        matched = names.match_name(window, [w.name for w in workers] + ["lead"])
-        window = matched or window
-
-    tmux.attach(window)
+        targets = [w.name for w in workers if w.status == "running"]
+        if not targets:
+            targets = [w.name for w in workers]
+        if not targets:
+            raise click.ClickException("No workers to display.")
+        tmux.multi_attach(targets)
+    else:
+        # Support partial name matching for window
+        if window:
+            workers = config.load_workers(team.name)
+            matched = names.match_name(window, [w.name for w in workers] + ["lead"])
+            window = matched or window
+        tmux.attach(window)
 
 
 # ── team logs ────────────────────────────────────────────────────
