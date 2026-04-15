@@ -6,6 +6,5 @@ build/
 .venv/
 iTerm2
 site/
-demo/*.gif
 demo/*.mp4
 demo/*.webm
