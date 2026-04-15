@@ -38,8 +38,30 @@ class TeamGroup(click.Group):
 
 @click.group(cls=TeamGroup)
 @click.version_option(version="0.1.0", prog_name="agentic-team")
-def app() -> None:
+@click.option(
+    "--team", "-T",
+    "team_name",
+    default=None,
+    envvar="TEAM_NAME",
+    help="Team to operate on (defaults to the active team).",
+)
+@click.pass_context
+def app(ctx: click.Context, team_name: str | None) -> None:
     """Orchestrate teams of AI coding agents in tmux."""
+    ctx.ensure_object(dict)
+    ctx.obj["team_name"] = team_name
+
+
+def _get_team(ctx: click.Context | None = None) -> config.TeamConfig:
+    """Get the team config, respecting the --team override."""
+    ctx = ctx or click.get_current_context()
+    name = ctx.obj.get("team_name") if ctx.obj else None
+    if name:
+        try:
+            return config.load_team(name)
+        except FileNotFoundError:
+            raise click.ClickException(f"Team {name!r} not found.")
+    return config.get_active_team()
 
 
 # ── team init ────────────────────────────────────────────────────
@@ -137,7 +159,7 @@ def init(
 def send(prompt: tuple[str, ...]) -> None:
     """Send a prompt to the team lead agent."""
     text = " ".join(prompt)
-    team = config.get_active_team()
+    team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
 
     if not tmux.session_exists():
@@ -183,7 +205,7 @@ def spawn_worker(
     working_dir: str | None,
 ) -> None:
     """Spawn a new worker agent."""
-    team = config.get_active_team()
+    team = _get_team()
     workers = config.load_workers(team.name)
 
     # Check limits
@@ -244,7 +266,7 @@ def spawn_worker(
 def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
     """Send a follow-up to a worker (resume oneshot or message interactive)."""
     text = " ".join(prompt)
-    team = config.get_active_team()
+    team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
     workers = config.load_workers(team.name)
 
@@ -283,7 +305,7 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
 @app.command("status")
 def status_cmd() -> None:
     """Show the status of the active team."""
-    team = config.get_active_team()
+    team = _get_team()
     st = status.get_team_status(team)
     click.echo(status.format_status(st))
 
@@ -296,7 +318,7 @@ def status_cmd() -> None:
 @click.option("--multi", "-m", is_flag=True, help="Tiled dashboard showing all workers.")
 def attach(window: str | None, multi: bool) -> None:
     """Attach to the team's tmux session."""
-    team = config.get_active_team()
+    team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
 
     if not tmux.session_exists():
@@ -335,7 +357,7 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
     With no arguments or --all, shows logs for every worker.
     With a name, shows logs for that specific worker.
     """
-    team = config.get_active_team()
+    team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
     workers = config.load_workers(team.name)
 
@@ -432,7 +454,7 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
 def send_to_worker(worker_name: str, message: tuple[str, ...]) -> None:
     """Send a message to a running interactive worker."""
     text = " ".join(message)
-    team = config.get_active_team()
+    team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
     workers = config.load_workers(team.name)
 
@@ -451,7 +473,7 @@ def send_to_worker(worker_name: str, message: tuple[str, ...]) -> None:
 @click.argument("worker_name")
 def stop_worker(worker_name: str) -> None:
     """Stop a specific worker."""
-    team = config.get_active_team()
+    team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
     workers = config.load_workers(team.name)
 
@@ -492,7 +514,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
     provider, mode, model, or name per task. Re-run to pick up remaining
     unchecked tasks.
     """
-    team = config.get_active_team()
+    team = _get_team()
     path = Path(task_file)
 
     # Sync status first so we have up-to-date worker states
@@ -677,7 +699,7 @@ def sync(task_file: str) -> None:
 
     Ticks off completed tasks and updates the status annotations.
     """
-    team = config.get_active_team()
+    team = _get_team()
     path = Path(task_file)
     all_tasks = taskfile.parse_task_file(path)
     st = status.get_team_status(team)
@@ -732,7 +754,7 @@ def stop(name: str | None) -> None:
         except FileNotFoundError:
             raise click.ClickException(f"Team {name!r} not found.")
     else:
-        team = config.get_active_team()
+        team = _get_team()
 
     tmux = TmuxOrchestrator(team.tmux_session)
     tmux.kill_session()
