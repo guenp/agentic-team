@@ -195,7 +195,7 @@ class RobustnessTests(unittest.TestCase):
 
     def test_spawn_worker_rolls_back_saved_state_when_tmux_spawn_fails(self) -> None:
         runner = CliRunner()
-        team = config.TeamConfig(name="demo", provider="claude", working_dir=str(self.workdir))
+        team = config.TeamConfig(name="demo", provider="claude", working_dir=str(self.workdir), use_worktrees=False)
         config.save_workers(team.name, [])
         fake_health = type("H", (), {"installed": True, "authenticated": True, "viable": True, "cli_path": "/usr/bin/claude", "detail": "ok", "install_hint": "", "login_hint": ""})()
 

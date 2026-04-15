@@ -77,13 +77,36 @@ lead manages workers.
 - Complete your task and report results clearly.
 """
 
+WORKER_WORKTREE_PROMPT = """\
 
-def build_worker_system_prompt(team_name: str, working_dir: str) -> str:
+## Git Worktree
+
+You are working in a git worktree on your own isolated branch: `{branch_name}`
+- Your worktree path is: {worktree_path}
+- Commit your work to your branch (`{branch_name}`)
+- NEVER push to or checkout the main branch
+- NEVER run `git push` to main or master
+- You may push your own branch if needed: `git push -u origin {branch_name}`
+"""
+
+
+def build_worker_system_prompt(
+    team_name: str,
+    working_dir: str,
+    branch_name: str | None = None,
+    worktree_path: str | None = None,
+) -> str:
     """Generate the system prompt for a worker agent."""
-    return WORKER_SYSTEM_PROMPT.format(
+    prompt = WORKER_SYSTEM_PROMPT.format(
         team_name=team_name,
         working_dir=working_dir,
     )
+    if branch_name and worktree_path:
+        prompt += WORKER_WORKTREE_PROMPT.format(
+            branch_name=branch_name,
+            worktree_path=worktree_path,
+        )
+    return prompt
 
 
 def build_team_lead_system_prompt(config: TeamConfig) -> str:
@@ -176,6 +199,8 @@ def build_worker_command(
     team_name: str = "",
     working_dir: str = "",
     log_path: Path | None = None,
+    branch_name: str | None = None,
+    worktree_path: str | None = None,
 ) -> str:
     """Build the shell command to start a worker agent."""
     provider = get_provider(provider_name)
@@ -189,7 +214,11 @@ def build_worker_command(
 
     # System prompt for worker context
     if provider.system_prompt_flag:
-        prompt = build_worker_system_prompt(team_name, working_dir)
+        prompt = build_worker_system_prompt(
+            team_name, working_dir,
+            branch_name=branch_name,
+            worktree_path=worktree_path,
+        )
         parts.extend([provider.system_prompt_flag, prompt])
 
     # For oneshot mode, the task is the positional prompt argument

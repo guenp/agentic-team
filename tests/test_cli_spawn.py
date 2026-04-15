@@ -17,10 +17,10 @@ from agentic_team.tmux import TmuxError
 from conftest import FakeTmux, fake_health
 
 
-def _setup_team(isolated_config, workers=None, provider="claude"):
+def _setup_team(isolated_config, workers=None, provider="claude", use_worktrees=False):
     """Create a team with optional pre-existing workers."""
     cfg = isolated_config
-    team = config.TeamConfig(name="demo", provider=provider, working_dir=str(cfg["workdir"]))
+    team = config.TeamConfig(name="demo", provider=provider, working_dir=str(cfg["workdir"]), use_worktrees=use_worktrees)
     config.save_team(team)
     config.save_workers("demo", workers or [])
     config.set_active_team("demo")
@@ -79,6 +79,7 @@ class TestSpawnWorker:
         team = config.TeamConfig(
             name="demo", provider="claude",
             working_dir=str(cfg["workdir"]), max_workers=1,
+            use_worktrees=False,
         )
         config.save_team(team)
         config.save_workers("demo", [
