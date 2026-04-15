@@ -63,7 +63,9 @@ team attach --multi
 | Option | Description |
 |--------|-------------|
 | `--window`, `-w` | Jump directly to a worker's window. Supports prefix matching. |
-| `--multi`, `-m` | Open a tiled dashboard showing all workers side by side. Each pane live-updates with the worker's output every second. |
+| `--multi`, `-m` | Join all workers into a single tiled window. |
+
+`team attach` always shows one worker per tab. `team attach --multi` always shows all workers in one tiled view. Switching between the two is seamless.
 
 !!! tip
     Use `Ctrl-b n` / `Ctrl-b p` to switch between windows inside tmux.

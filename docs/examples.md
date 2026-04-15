@@ -135,9 +135,9 @@ team run tasks.md
 team attach --multi
 ```
 
-Each pane shows a live-updating capture of one worker's output, refreshed every second. The worker name is displayed as a cyan header at the top of each pane.
+Each pane is a real interactive tmux pane — you can scroll, resize, and interact with workers directly. Running `team attach --multi` again re-attaches without modifying the layout.
 
-Use `Ctrl-b d` to detach from the dashboard and return to your shell.
+Use `Ctrl-b d` to detach. Run `team attach` to switch back to individual tabs.
 
 ---
 

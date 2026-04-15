@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -226,18 +227,20 @@ def spawn_worker(
     worker_name = name or names.name_from_task(task, existing_names)
 
     # Build command
+    workdir = working_dir or team.working_dir
     worker_cmd = agents.build_worker_command(
         provider_name=provider,
         task=task,
         mode=mode,
         model=model,
         permissions=team.permissions,
+        team_name=team.name,
+        working_dir=workdir,
     )
 
     # Spawn in tmux
     tmux = TmuxOrchestrator(team.tmux_session)
     log_path = config.log_dir_for_team(team.name) / f"{worker_name}.log"
-    workdir = working_dir or team.working_dir
     # For interactive workers, send the task as an initial prompt after the agent starts
     initial_prompt = task if mode == "interactive" else None
     tmux.spawn_worker(worker_name, worker_cmd, workdir, log_path, initial_prompt=initial_prompt)
@@ -329,20 +332,16 @@ def attach(window: str | None, multi: bool) -> None:
     state_dir = config.STATE_DIR / team.name
 
     if multi:
-        # Break any existing multi layout first
-        tmux.break_multi(state_dir)
+        # Include all workers that still have a live tmux window
+        windows = {w.name for w in tmux.list_windows()}
         workers = config.load_workers(team.name)
-        targets = [w.name for w in workers if w.status == "running"]
-        if not targets:
-            targets = [w.name for w in workers]
+        targets = [w.name for w in workers if w.tmux_window in windows]
         if not targets:
             raise click.ClickException("No workers to display.")
         tmux.multi_attach(targets, state_dir)
     else:
-        # Restore individual windows if currently in multi layout
-        restored = tmux.break_multi(state_dir)
-        if restored:
-            click.echo(f"Restored {len(restored)} windows.")
+        # Undo multi layout if active, restoring individual tabs
+        tmux.break_multi(state_dir)
         # Support partial name matching for window
         if window:
             workers = config.load_workers(team.name)
@@ -353,20 +352,108 @@ def attach(window: str | None, multi: bool) -> None:
 
 # ── team logs ────────────────────────────────────────────────────
 
+# Regex to strip ANSI escape sequences from pipe-pane log output
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][\x20-\x7e]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Z]")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes and carriage returns from raw log text."""
+    text = _ANSI_RE.sub("", text)
+    # Remove carriage returns (terminal overwrites)
+    text = text.replace("\r", "")
+    return text
+
+
+# Tool call prefixes in Claude Code output (⏺ Bash(...), etc.)
+_TOOL_PREFIXES = (
+    "Bash(", "Read(", "Write(", "Edit(", "Grep(", "Glob(", "Search(",
+    "Searched ", "WebFetch(", "WebSearch(", "Agent(",
+)
+
+# Lines to always filter from captured pane output
+_CHROME_PATTERNS = (
+    "esc to interrupt",
+    "ctrl+o to expand",
+    "shift+tab to cycle",
+)
+
+
+def _extract_last_response(output: str) -> list[str]:
+    """Extract the last agent response from captured pane output.
+
+    Finds the last ⏺ marker that starts a text response (not a tool
+    call), and returns only lines from that point onward — with UI
+    chrome, prompts, and tool-call blocks filtered out.
+    """
+    lines = output.splitlines()
+
+    # Find the start of the last text response (⏺ not followed by a tool name)
+    last_response = -1
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("\u23fa") or s.startswith("⏺"):
+            after = s.lstrip("\u23fa⏺ ")
+            if not any(after.startswith(p) for p in _TOOL_PREFIXES):
+                last_response = i
+
+    if last_response < 0:
+        # No ⏺ response found — fall back to showing everything after
+        # the last ❯ prompt line.
+        for i in range(len(lines) - 1, -1, -1):
+            s = lines[i].strip()
+            if s.startswith("❯") and len(s) > 1:
+                last_response = i + 1
+                break
+
+    if last_response < 0:
+        last_response = 0
+
+    cleaned = []
+    for line in lines[last_response:]:
+        s = line.strip()
+        if not s:
+            continue
+        # Skip UI chrome
+        if any(p in s for p in _CHROME_PATTERNS):
+            continue
+        # Skip horizontal rules (all box-drawing chars)
+        if all(c in "─━" for c in s):
+            continue
+        # Skip bare prompts
+        if s in ("❯", "\u276f"):
+            continue
+        # Skip auto-mode indicator
+        if s.startswith("⏵⏵") or s.startswith("\u23f5\u23f5"):
+            continue
+        # Skip subsequent ❯ prompt echoes (task was re-sent)
+        if s.startswith("❯"):
+            continue
+        # Skip tool call blocks (⏺ Bash(...), ⎿ result lines)
+        if s.startswith("\u23fa") or s.startswith("⏺"):
+            after = s.lstrip("\u23fa⏺ ")
+            if any(after.startswith(p) for p in _TOOL_PREFIXES):
+                continue
+        if s.startswith("⎿"):
+            continue
+        # Skip "Read N file", "Searched for N pattern" tool summaries
+        if re.match(r"(Read|Searched for|Wrote|Edited) \d+", s):
+            continue
+        cleaned.append(line)
+    return cleaned
+
 
 @app.command()
 @click.argument("worker_name", required=False)
-@click.option("--tail", "-n", default=50, help="Number of lines to capture from the pane.")
-@click.option("--raw", is_flag=True, help="Read raw pipe-pane log file instead of capture-pane.")
+@click.option("--tail", "-n", default=50, help="Number of lines to show.")
+@click.option("--raw", is_flag=True, help="Show unfiltered log output (with escape codes).")
 @click.option("--all", "-a", "show_all", is_flag=True, help="Show logs for all workers.")
 def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
-    """View worker output via tmux capture-pane.
+    """View worker output from pipe-pane log files.
 
     With no arguments or --all, shows logs for every worker.
     With a name, shows logs for that specific worker.
     """
     team = _get_team()
-    tmux = TmuxOrchestrator(team.tmux_session)
     workers = config.load_workers(team.name)
 
     if worker_name and not show_all:
@@ -386,68 +473,36 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
         matched = names.match_name(t, all_names) or t
         resolved.append(matched)
 
-    if not tmux.session_exists() and not raw:
-        raise click.ClickException(f"tmux session {team.tmux_session!r} not found.")
-
     for i, matched in enumerate(resolved):
-        if True:
-            w = next((w for w in workers if w.name == matched), None)
-            st = w.status if w else "?"
-            task = w.task if w else ""
-            if len(task) > 60:
-                task = task[:57] + "..."
-            status_color = {"running": "yellow", "done": "green", "error": "red"}.get(st, "white")
-            click.echo()
-            click.echo(click.style(f"{'━' * 60}", fg="bright_black"))
-            click.echo(
-                click.style(f"  {matched}", fg="cyan", bold=True)
-                + click.style(f"  {st}", fg=status_color)
-                + click.style(f"  {task}", fg="bright_black")
-            )
-            click.echo(click.style(f"{'━' * 60}", fg="bright_black"))
+        w = next((w for w in workers if w.name == matched), None)
+        st = w.status if w else "?"
+        task = w.task if w else ""
+        if len(task) > 60:
+            task = task[:57] + "..."
+        status_color = {"running": "yellow", "done": "green", "error": "red"}.get(st, "white")
+        click.echo()
+        click.echo(click.style(f"{'━' * 60}", fg="bright_black"))
+        click.echo(
+            click.style(f"  {matched}", fg="cyan", bold=True)
+            + click.style(f"  {st}", fg=status_color)
+            + click.style(f"  {task}", fg="bright_black")
+        )
+        click.echo(click.style(f"{'━' * 60}", fg="bright_black"))
 
-        if raw:
-            log_path = config.log_dir_for_team(team.name) / f"{matched}.log"
-            if not log_path.exists():
-                click.echo(f"  (no log file)")
-            else:
-                lines = log_path.read_text().splitlines()
-                for line in lines[-tail:]:
-                    click.echo(line)
+        log_path = config.log_dir_for_team(team.name) / f"{matched}.log"
+        if not log_path.exists():
+            click.echo("  (no log file)")
+        elif raw:
+            lines = log_path.read_text().splitlines()
+            for line in lines[-tail:]:
+                click.echo(line)
         else:
-            output = tmux.capture_pane(matched, lines=tail).rstrip("\n")
-            # Strip Claude Code UI chrome and startup noise
-            cleaned = []
-            for line in output.splitlines():
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                # Horizontal rules (all ─ or ━)
-                if all(c in "─━" for c in stripped):
-                    continue
-                # Bare prompts
-                if stripped in ("❯", "\u276f"):
-                    continue
-                # Status bar lines
-                if "esc to interrupt" in stripped:
-                    continue
-                if stripped.startswith("⏵⏵") or stripped.startswith("\u23f5\u23f5"):
-                    continue
-                # Claude Code banner and startup
-                if stripped.startswith("▐▛") or stripped.startswith("▝▜") or stripped.startswith("▘▘"):
-                    continue
-                # Command echo (e.g. "❯ claude --permission-mode auto")
-                if stripped.startswith("❯ claude ") or stripped.startswith("claude --"):
-                    continue
-                if stripped.startswith("❯ codex ") or stripped.startswith("codex --"):
-                    continue
-                if stripped.startswith("❯ gemini ") or stripped.startswith("gemini --"):
-                    continue
-                # Claude Code version/model line
-                if "Claude Code v" in stripped or "Claude Enterprise" in stripped:
-                    continue
-                cleaned.append(line)
-            click.echo("\n".join(cleaned))
+            # Read log, strip ANSI escapes, then extract the last response
+            raw_text = log_path.read_text()
+            clean_text = _strip_ansi(raw_text)
+            cleaned = _extract_last_response(clean_text)
+            for line in cleaned[-tail:]:
+                click.echo(line)
 
         if i < len(resolved) - 1:
             click.echo()
@@ -470,7 +525,8 @@ def send_to_worker(worker_name: str, message: tuple[str, ...]) -> None:
     if not matched:
         raise click.ClickException(f"No worker matching {worker_name!r}")
 
-    tmux.send_keys(matched, text)
+    state_dir = config.STATE_DIR / team.name
+    tmux.send_keys(matched, text, state_dir=state_dir)
     click.echo(f"Sent to {matched}.")
 
 
@@ -653,6 +709,8 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
                 mode=mode,
                 model=model,
                 permissions=team.permissions,
+                team_name=team.name,
+                working_dir=workdir,
             )
 
             log_path = config.log_dir_for_team(team.name) / f"{worker_name}.log"

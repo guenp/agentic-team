@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .config import (
+    STATE_DIR,
     TeamConfig,
     WorkerState,
     load_workers,
@@ -23,7 +25,16 @@ def get_team_status(config: TeamConfig) -> dict:
     tmux = TmuxOrchestrator(config.tmux_session)
     workers = load_workers(config.name)
     windows = {w.name: w for w in tmux.list_windows()}
+    state_dir = STATE_DIR / config.name
     updated = False
+
+    # In multi mode, workers are joined into the host window — their
+    # original window names won't appear in list-windows.  Track which
+    # workers are joined so we don't falsely mark them as done.
+    multi_file = state_dir / "multi_targets"
+    multi_joined: set[str] = set()
+    if multi_file.exists():
+        multi_joined = set(multi_file.read_text().strip().splitlines())
 
     # Deliver any pending prompts to interactive workers that are now ready
     log_dir = log_dir_for_team(config.name)
@@ -35,15 +46,17 @@ def get_team_status(config: TeamConfig) -> dict:
         if worker.status != "running":
             continue
 
-        # Check if the tmux window still exists
-        if worker.tmux_window not in windows:
+        # Check if the tmux window still exists.
+        # Skip this check for workers joined into a multi-pane layout —
+        # their windows were merged into the host window.
+        if worker.tmux_window not in windows and worker.tmux_window not in multi_joined:
             worker.status = "done"
             updated = True
             _try_extract_session_id(config, worker)
             continue
 
         # Check if the pane process has exited
-        if tmux.is_pane_dead(worker.tmux_window):
+        if tmux.is_pane_dead(worker.tmux_window, state_dir=state_dir):
             worker.status = "done"
             updated = True
             _try_extract_session_id(config, worker)
@@ -52,14 +65,14 @@ def get_team_status(config: TeamConfig) -> dict:
         # For oneshot workers, the pane stays alive (drops to shell) after
         # the agent command finishes. Detect completion by checking the
         # capture-pane output for a shell prompt or JSON result.
-        if worker.mode == "oneshot" and _is_oneshot_done(config, worker, tmux):
+        if worker.mode == "oneshot" and _is_oneshot_done(config, worker, tmux, state_dir):
             worker.status = "done"
             updated = True
             _try_extract_session_id(config, worker)
 
         # For interactive workers, the agent stays running but returns to
         # its input prompt (❯) after completing a task. Detect "idle" state.
-        if worker.mode == "interactive" and _is_interactive_idle(worker, tmux):
+        if worker.mode == "interactive" and _is_interactive_idle(worker, tmux, state_dir):
             worker.status = "done"
             updated = True
 
@@ -132,7 +145,8 @@ def format_status(status: dict) -> str:
 
 
 def _is_oneshot_done(
-    config: TeamConfig, worker: WorkerState, tmux: TmuxOrchestrator
+    config: TeamConfig, worker: WorkerState, tmux: TmuxOrchestrator,
+    state_dir: Path | None = None,
 ) -> bool:
     """Detect if a oneshot worker's command has finished.
 
@@ -143,7 +157,7 @@ def _is_oneshot_done(
     in scrollback.
     """
     try:
-        output = tmux.capture_pane(worker.tmux_window, lines=80)
+        output = tmux.capture_pane(worker.tmux_window, lines=80, state_dir=state_dir)
     except Exception:
         return False
 
@@ -188,14 +202,17 @@ def _is_oneshot_done(
     return False
 
 
-def _is_interactive_idle(worker: WorkerState, tmux: TmuxOrchestrator) -> bool:
+def _is_interactive_idle(
+    worker: WorkerState, tmux: TmuxOrchestrator,
+    state_dir: Path | None = None,
+) -> bool:
     """Detect if an interactive worker has finished its task and is idle.
 
     Claude Code shows "esc to interrupt" in its status bar while working,
     and removes it when idle. This is the most reliable signal.
     """
     try:
-        output = tmux.capture_pane(worker.tmux_window, lines=80)
+        output = tmux.capture_pane(worker.tmux_window, lines=80, state_dir=state_dir)
     except Exception:
         return False
 

@@ -49,6 +49,28 @@ fire-and-forget tasks.
 """
 
 
+WORKER_SYSTEM_PROMPT = """\
+You are a worker agent in team "{team_name}". Focus only on the task you are given.
+
+## Rules
+
+- NEVER start, attach to, or interact with tmux sessions. You are already running \
+inside tmux — creating nested sessions will break the orchestration.
+- NEVER run `team` CLI commands (team spawn-worker, team init, etc.). Only the team \
+lead manages workers.
+- Work within your assigned directory: {working_dir}
+- Complete your task and report results clearly.
+"""
+
+
+def build_worker_system_prompt(team_name: str, working_dir: str) -> str:
+    """Generate the system prompt for a worker agent."""
+    return WORKER_SYSTEM_PROMPT.format(
+        team_name=team_name,
+        working_dir=working_dir,
+    )
+
+
 def build_team_lead_system_prompt(config: TeamConfig) -> str:
     """Generate the system prompt for the team lead agent."""
     return TEAM_LEAD_SYSTEM_PROMPT.format(
@@ -105,7 +127,8 @@ def build_worker_command(
     mode: str = "interactive",
     model: str | None = None,
     permissions: str = "auto",
-    system_prompt: str | None = None,
+    team_name: str = "",
+    working_dir: str = "",
 ) -> str:
     """Build the shell command to start a worker agent."""
     provider = get_provider(provider_name)
@@ -124,8 +147,9 @@ def build_worker_command(
         parts.extend(["--permission-mode", permissions])
 
     # System prompt for worker context
-    if system_prompt and provider.system_prompt_flag:
-        parts.extend([provider.system_prompt_flag, system_prompt])
+    if provider.system_prompt_flag:
+        prompt = build_worker_system_prompt(team_name, working_dir)
+        parts.extend([provider.system_prompt_flag, prompt])
 
     # For oneshot mode, the task is the positional prompt argument
     if mode == "oneshot":

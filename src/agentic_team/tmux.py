@@ -143,13 +143,17 @@ class TmuxOrchestrator:
 
     # ── Input / output ───────────────────────────────────────────
 
-    def send_keys(self, target: str, text: str, delay: float = 0) -> None:
+    def send_keys(
+        self, target: str, text: str, delay: float = 0,
+        state_dir: Path | None = None,
+    ) -> None:
         """Send text to a tmux pane followed by Enter."""
+        resolved = self._resolve_target(target, state_dir)
         # Use literal flag (-l) to avoid tmux key interpretation,
         # then send Enter separately
         self._run([
             "tmux", "send-keys",
-            "-t", f"{self.session_name}:{target}",
+            "-t", f"{self.session_name}:{resolved}",
             "-l", text,
         ])
         if delay > 0:
@@ -157,15 +161,18 @@ class TmuxOrchestrator:
             time.sleep(delay)
         self._run([
             "tmux", "send-keys",
-            "-t", f"{self.session_name}:{target}",
+            "-t", f"{self.session_name}:{resolved}",
             "Enter",
         ])
 
-    def capture_pane(self, target: str, lines: int = 50) -> str:
+    def capture_pane(
+        self, target: str, lines: int = 50, state_dir: Path | None = None,
+    ) -> str:
         """Capture the last N lines of a pane."""
+        resolved = self._resolve_target(target, state_dir)
         result = self._run([
             "tmux", "capture-pane",
-            "-t", f"{self.session_name}:{target}",
+            "-t", f"{self.session_name}:{resolved}",
             "-p",
             "-S", f"-{lines}",
         ])
@@ -213,11 +220,14 @@ class TmuxOrchestrator:
             ))
         return windows
 
-    def is_pane_dead(self, target: str) -> bool:
+    def is_pane_dead(
+        self, target: str, state_dir: Path | None = None,
+    ) -> bool:
         """Check if a pane's process has exited."""
+        resolved = self._resolve_target(target, state_dir)
         result = self._run([
             "tmux", "list-panes",
-            "-t", f"{self.session_name}:{target}",
+            "-t", f"{self.session_name}:{resolved}",
             "-F", "#{pane_dead}",
         ], check=False)
         if result.returncode != 0:
@@ -246,16 +256,30 @@ class TmuxOrchestrator:
     def multi_attach(self, targets: list[str], state_dir: Path) -> None:
         """Join worker panes into a single tiled window and attach.
 
-        Uses ``tmux join-pane`` to move real worker panes into the first
-        worker's window, then applies a tiled layout.  The original
-        window names are saved to *state_dir* so ``break_multi`` can
-        restore them later.
+        If already in multi mode, just re-attaches to the existing tiled
+        window without re-joining.  Uses ``tmux join-pane`` to move real
+        worker panes into the first worker's window, then applies a
+        tiled layout.  The join order is persisted so ``break_multi``
+        can undo it later.
         """
         if not targets:
             return
         if len(targets) == 1:
             self.attach(targets[0])
             return
+
+        multi_file = state_dir / "multi_targets"
+
+        # Already in multi mode — verify the host still has joined panes.
+        if multi_file.exists():
+            host = multi_file.read_text().strip().splitlines()[0]
+            pane_count = self._count_panes(host)
+            if pane_count > 1:
+                # Panes are still joined — just re-attach.
+                self.attach(host)
+                return
+            # Stale file (session was restarted, etc.) — clean up and rejoin.
+            multi_file.unlink()
 
         host = targets[0]
 
@@ -276,7 +300,6 @@ class TmuxOrchestrator:
         ])
 
         # Persist the join order so break_multi can undo it
-        multi_file = state_dir / "multi_targets"
         multi_file.parent.mkdir(parents=True, exist_ok=True)
         multi_file.write_text("\n".join(targets))
 
@@ -312,10 +335,50 @@ class TmuxOrchestrator:
                 "-n", target,
             ], check=False)
 
+        # Force all windows to resize to the full session size.
+        # After break-pane, windows may retain the smaller dimensions
+        # from the tiled layout.
+        for target in targets:
+            self._run([
+                "tmux", "resize-window",
+                "-t", f"{self.session_name}:{target}",
+                "-A",
+            ], check=False)
+
         multi_file.unlink(missing_ok=True)
         return targets
 
     # ── Internals ────────────────────────────────────────────────
+
+    def _resolve_target(self, target: str, state_dir: Path | None) -> str:
+        """Resolve a worker name to its tmux target.
+
+        In multi mode, workers are joined into a single host window as
+        numbered panes.  This method translates the worker name to
+        ``host.pane_index`` so that capture-pane and is_pane_dead still
+        work.  Outside multi mode, returns the target unchanged.
+        """
+        if state_dir is None:
+            return target
+        multi_file = state_dir / "multi_targets"
+        if not multi_file.exists():
+            return target
+        targets = multi_file.read_text().strip().splitlines()
+        if target in targets:
+            host = targets[0]
+            pane_index = targets.index(target)
+            return f"{host}.{pane_index}"
+        return target
+
+    def _count_panes(self, target: str) -> int:
+        """Return the number of panes in a window (0 if it doesn't exist)."""
+        result = self._run([
+            "tmux", "list-panes",
+            "-t", f"{self.session_name}:{target}",
+        ], check=False)
+        if result.returncode != 0:
+            return 0
+        return len(result.stdout.strip().splitlines())
 
     def _run(
         self,
