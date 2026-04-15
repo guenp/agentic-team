@@ -1103,17 +1103,22 @@ def sync(task_file: str) -> None:
 
 @app.command()
 def clear() -> None:
-    """Remove completed workers from the status list."""
+    """Remove completed workers and close their tmux windows."""
     team = _get_team()
     workers = config.load_workers(team.name)
-    before = len(workers)
+    done = [w for w in workers if w.status == "done"]
     remaining = [w for w in workers if w.status != "done"]
-    removed = before - len(remaining)
-    if removed == 0:
+    if not done:
         click.echo("No completed workers to clear.")
         return
+
+    # Kill the tmux windows for done workers
+    tmux = TmuxOrchestrator(team.tmux_session)
+    for w in done:
+        tmux.kill_window(w.tmux_window)
+
     config.save_workers(team.name, remaining)
-    click.echo(f"Cleared {removed} completed worker(s). {len(remaining)} remaining.")
+    click.echo(f"Cleared {len(done)} completed worker(s). {len(remaining)} remaining.")
 
 
 # ── team stop ────────────────────────────────────────────────────
