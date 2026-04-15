@@ -601,7 +601,43 @@ def _status_live(
     console = Console()
     status_colors = {"running": "yellow", "done": "green", "error": "red"}
 
-    # Set terminal to raw mode so we can detect 'q' without Enter
+    is_tty = sys.stdin.isatty()
+
+    def _render_panels() -> Group:
+        st = status.get_team_status(team)
+        worker_map = {w["name"]: w for w in st["workers"]}
+
+        panels = []
+        for name in targets:
+            w = worker_map.get(name, {})
+            ws = w.get("status", "?")
+            elapsed = w.get("elapsed", "")
+            task = w.get("task", "")
+            if len(task) > 60:
+                task = task[:57] + "..."
+            color = status_colors.get(ws, "white")
+
+            tail = _pane_tail(tmux, name, n=5, state_dir=state_dir)
+
+            header = Text()
+            header.append(f"  {ws}", style=f"bold {color}")
+            header.append(f"  {elapsed}", style="dim")
+            header.append(f"  {task}", style="dim")
+
+            panels.append(Panel(
+                tail,
+                title=f"[bold cyan]{name}[/bold cyan]",
+                subtitle=header,
+                border_style=color,
+            ))
+        return Group(*panels)
+
+    # No tty: print a single snapshot and exit
+    if not is_tty:
+        console.print(_render_panels())
+        return
+
+    # Interactive: live-updating display with 'q' to quit
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
 
@@ -610,44 +646,12 @@ def _status_live(
 
         with Live(console=console, refresh_per_second=2) as live:
             while True:
-                # Check for 'q' keypress (non-blocking)
                 if select.select([sys.stdin], [], [], 0)[0]:
                     ch = sys.stdin.read(1)
                     if ch in ("q", "Q"):
                         break
 
-                # Refresh status
-                st = status.get_team_status(team)
-                worker_map = {w["name"]: w for w in st["workers"]}
-
-                panels = []
-                for name in targets:
-                    w = worker_map.get(name, {})
-                    ws = w.get("status", "?")
-                    elapsed = w.get("elapsed", "")
-                    task = w.get("task", "")
-                    if len(task) > 60:
-                        task = task[:57] + "..."
-                    color = status_colors.get(ws, "white")
-
-                    tail = _pane_tail(tmux, name, n=5, state_dir=state_dir)
-
-                    header = Text()
-                    header.append(f"  {ws}", style=f"bold {color}")
-                    header.append(f"  {elapsed}", style="dim")
-                    header.append(f"  {task}", style="dim")
-
-                    panels.append(Panel(
-                        tail,
-                        title=f"[bold cyan]{name}[/bold cyan]",
-                        subtitle=header,
-                        border_style=color,
-                    ))
-
-                footer = Text("press q to quit", style="dim")
-                panels.append(footer)
-                live.update(Group(*panels))
-
+                live.update(Group(_render_panels(), Text("press q to quit", style="dim")))
                 time.sleep(0.5)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
