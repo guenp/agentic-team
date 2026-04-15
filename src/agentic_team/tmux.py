@@ -250,14 +250,13 @@ class TmuxOrchestrator:
                 "-t", f"{self.session_name}:{window}",
             ], check=False)
 
-        # Force all windows to resize — they may still be at the
-        # initial 220x50 detached size from session creation.
-        for w in self.list_windows():
-            self._run([
-                "tmux", "resize-window",
-                "-t", f"{self.session_name}:{w.name}",
-                "-A",
-            ], check=False)
+        # Ensure all windows resize to match the client's terminal
+        # when we attach.  This is set in create_session too, but
+        # older sessions may not have it.
+        self._run([
+            "tmux", "set-option", "-t", self.session_name,
+            "window-size", "smallest",
+        ], check=False)
 
         # Replace current process with tmux attach
         os.execvp("tmux", [
