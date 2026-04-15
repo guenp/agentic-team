@@ -161,7 +161,6 @@ def format_status(status: dict) -> None:
     table = Table(title=f"Workers ({len(workers)})", title_style="bold", show_edge=False, pad_edge=False)
     table.add_column("Name", style="cyan")
     table.add_column("Provider", style="dim")
-    table.add_column("Mode", style="dim")
     table.add_column("Status")
     table.add_column("Elapsed", justify="right", style="dim")
     table.add_column("Task")
@@ -191,7 +190,6 @@ def format_status(status: dict) -> None:
         table.add_row(
             w["name"],
             w["provider"],
-            w["mode"],
             Text(w["status"], style=style),
             w["elapsed"],
             task_col,
