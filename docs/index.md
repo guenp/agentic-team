@@ -12,6 +12,10 @@ User ──> team CLI ──> tmux session
                        └── ...
 ```
 
+## Demo
+
+![agentic-team demo](../demo/demo.gif)
+
 ## Features
 
 - **Multi-provider**: Supports Claude Code, Codex, and Gemini CLI agents

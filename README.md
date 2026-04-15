@@ -12,6 +12,10 @@ User ──> team CLI ──> tmux session
                        └── ...
 ```
 
+## Demo
+
+![agentic-team demo](demo/demo.gif)
+
 ## Installation
 
 Requires Python 3.13+ and [tmux](https://github.com/tmux/tmux).
