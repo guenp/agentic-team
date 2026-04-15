@@ -2,6 +2,8 @@
 
 ## Multi-provider comparison
 
+![Multi-provider comparison demo](compare-providers.gif)
+
 Run the same task across Claude, Codex, and Gemini to compare how each provider approaches it. A Claude team lead coordinates and reviews the results.
 
 ### Task file
