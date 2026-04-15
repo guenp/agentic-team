@@ -32,12 +32,12 @@ team init [OPTIONS] NAME
 
 | Option | Meaning |
 |--------|---------|
-| `-p, --provider [claude\|codex\|gemini]` | Team lead provider |
-| `-m, --model TEXT` | Lead model override |
-| `--worker-mode [oneshot\|interactive]` | Default mode for new workers |
-| `--permissions [auto\|default\|dangerously-skip-permissions]` | Permission mode saved in team config |
-| `--max-workers INTEGER` | Maximum concurrent workers |
-| `-C, --working-dir DIRECTORY` | Default working directory for lead and workers |
+| `-p, --provider [claude\|codex\|gemini]` | Team lead provider. Default `claude`. |
+| `-m, --model TEXT` | Lead model override. No default (uses the provider's own default). |
+| `--worker-mode [oneshot\|interactive]` | Default mode for new workers. Default `interactive`. |
+| `--permissions [auto\|default\|dangerously-skip-permissions]` | Permission mode saved in team config. Default `auto`. |
+| `--max-workers INTEGER` | Maximum concurrent workers. Default `6`. |
+| `-C, --working-dir DIRECTORY` | Default working directory for lead and workers. Default `.` (current directory). |
 
 Behavior notes:
 
@@ -218,8 +218,6 @@ team wait [OPTIONS]
 The command prints the status table immediately, then only reprints it when a worker's status changes.
 
 ### `team clear`
-
-Remove completed workers from the status list and close their tmux windows. Also cleans up orphaned windows that are no longer tracked.
 
 ```text
 team clear
