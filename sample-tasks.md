@@ -1,11 +1,12 @@
 # Sample Tasks
 
-## /Users/guen.p/repos/guenp/agentic-team
+## ~/repos/backend
+- [ ] Fix the authentication bug in the login endpoint
+- [ ] Add unit tests for the user registration flow (mode: oneshot)
 
-- [ ] List all Python files in the project ← adder | running
-- [ ] Show the current git log ← bear | running
-- [x] Already done task
+## ~/repos/frontend
+- [ ] Update the landing page hero section
+- [ ] Migrate the dashboard component to TypeScript (provider: codex)
 
-## /tmp
-
-- [ ] Create a hello.txt file with "hello world" ← crispy | running
+## ~/repos/docs
+- [ ] Add API reference for the new endpoints
