@@ -235,22 +235,23 @@ def _is_interactive_idle(
 ) -> bool:
     """Detect if an interactive worker has finished its task and is idle.
 
-    Uses provider-specific signals:
-    - Claude: capture_pane (rendered screen shows status bar reliably)
-    - Codex: log file ("Worked for" completion summary)
-    - Gemini: log file ("Type your message" idle prompt)
+    Uses capture_pane for all providers — TUI agents rewrite the screen
+    so log files don't reliably reflect the current state. capture_pane
+    gives the actual rendered screen content.
+
+    Provider-specific signals:
+    - Claude: "esc to inter(rupt)" absent from tail + output markers present
+    - Codex: "Worked for" summary or idle prompt "›" visible
+    - Gemini: "Type your message" idle prompt visible
     """
+    try:
+        output = tmux.capture_pane(
+            worker.tmux_window, lines=30, state_dir=state_dir,
+        )
+    except Exception:
+        return False
+
     if worker.provider == "claude":
-        # Claude Code shows "esc to interrupt" in its status bar while
-        # working.  capture_pane gives the rendered screen state which
-        # always includes the status bar — the log file stream doesn't
-        # reliably preserve it after ANSI stripping.
-        try:
-            output = tmux.capture_pane(
-                worker.tmux_window, lines=20, state_dir=state_dir,
-            )
-        except Exception:
-            return False
         tail = "\n".join(output.splitlines()[-10:])
         if "esc to inter" in tail:
             return False
@@ -259,13 +260,21 @@ def _is_interactive_idle(
             return True
 
     elif worker.provider == "codex":
-        log_tail = _read_log_tail(worker.name, state_dir)
-        if log_tail and "Worked for" in log_tail:
+        # Codex shows "Worked for Xm Ys" when done, or an idle prompt
+        # "›" with a status line showing model/usage info.
+        if "Worked for" in output:
             return True
+        # Idle prompt: last non-empty lines show "›" and model info
+        tail_lines = [l.strip() for l in output.splitlines() if l.strip()]
+        if tail_lines:
+            last = tail_lines[-1]
+            # Status line like "gpt-5.4 xhigh · 79% left"
+            if "% left" in last or "left ·" in last:
+                return True
 
     elif worker.provider == "gemini":
-        log_tail = _read_log_tail(worker.name, state_dir)
-        if log_tail and "Type your message" in log_tail[-2000:]:
+        tail = "\n".join(output.splitlines()[-10:])
+        if "Type your message" in tail:
             return True
 
     return False
