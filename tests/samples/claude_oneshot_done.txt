@@ -1,0 +1,5 @@
+$ claude --print --output-format stream-json --append-system-prompt 'You are a worker agent in team "demo".' 'Fix the login bug'
+{"type":"assistant","message":{"content":"I'll fix the login bug..."}}
+{"type":"result","subtype":"success","session_id":"abc-123-def-456-789"}
+__AGENTIC_TEAM_EXIT__=0
+$

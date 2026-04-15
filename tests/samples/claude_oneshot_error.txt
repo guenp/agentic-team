@@ -1,0 +1,4 @@
+$ claude --print --output-format stream-json 'Fix the login bug'
+zsh: command not found: claude
+__AGENTIC_TEAM_EXIT__=127
+%
