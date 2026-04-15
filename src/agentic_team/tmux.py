@@ -11,6 +11,26 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .models import PROVIDERS, get_provider
+
+
+READY_TIMEOUT_SECONDS = 20
+
+
+def tmux_version() -> str | None:
+    """Return the installed tmux version string, or None if unavailable."""
+    if not shutil.which("tmux"):
+        return None
+    result = subprocess.run(
+        ["tmux", "-V"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or result.stderr.strip() or "tmux"
+
 
 EXIT_SENTINEL = "__AGENTIC_TEAM_EXIT__="
 CAPTURE_RETRY_BUDGET = 2
@@ -84,7 +104,13 @@ class TmuxOrchestrator:
         )
         return result.returncode == 0
 
-    def create_session(self, working_dir: str, lead_command: str) -> None:
+    def create_session(
+        self,
+        working_dir: str,
+        lead_command: str,
+        provider_name: str | None = None,
+        timeout: int = READY_TIMEOUT_SECONDS,
+    ) -> None:
         """Create a detached tmux session and start the team lead."""
         try:
             self._run([
@@ -111,6 +137,12 @@ class TmuxOrchestrator:
             ])
             # Start the team lead agent in the first window
             self.send_shell_command("lead", lead_command)
+            if provider_name:
+                ready, _ = self.wait_until_ready("lead", provider_name, timeout=timeout)
+                if not ready:
+                    raise RuntimeError(
+                        f"Lead agent for provider {provider_name!r} did not reach a ready banner."
+                    )
         except TmuxError:
             self.kill_session()
             raise
@@ -144,7 +176,10 @@ class TmuxOrchestrator:
         command: str,
         working_dir: str,
         state_dir: Path,
+        provider_name: str,
+        mode: str = "interactive",
         initial_prompt: str | None = None,
+        timeout: int = READY_TIMEOUT_SECONDS,
     ) -> None:
         """Create a window, run the command, and optionally send an
         initial prompt after the agent starts.
@@ -156,7 +191,21 @@ class TmuxOrchestrator:
         self.create_window(window_name, working_dir)
         try:
             self.send_shell_command(window_name, command)
-            if initial_prompt:
+            if mode == "interactive":
+                ready, _ = self.wait_until_ready(
+                    window_name,
+                    provider_name,
+                    timeout=timeout,
+                    state_dir=state_dir,
+                )
+                if not ready:
+                    raise RuntimeError(
+                        f"Worker {window_name!r} did not reach a ready banner."
+                    )
+                if initial_prompt:
+                    # TUI providers need a small delay so Enter submits reliably.
+                    self.send_keys(window_name, initial_prompt, delay=0.5, state_dir=state_dir)
+            elif initial_prompt:
                 self._queue_prompt(window_name, initial_prompt, state_dir)
         except (OSError, TmuxError):
             self.kill_window(window_name)
@@ -210,12 +259,7 @@ class TmuxOrchestrator:
                 continue
             ready = any(
                 indicator in output
-                for indicator in (
-                    "Claude Code",      # Claude Code welcome banner
-                    "OpenAI Codex",     # Codex welcome banner
-                    "Gemini CLI",       # Gemini CLI welcome banner
-                    "Type your message",  # Gemini input prompt
-                )
+                for indicator in _all_ready_indicators()
             )
             if ready:
                 try:
@@ -271,7 +315,6 @@ class TmuxOrchestrator:
             "-l", text,
         ])
         if delay > 0:
-            import time
             time.sleep(delay)
         self._run([
             "tmux", "send-keys",
@@ -314,6 +357,33 @@ class TmuxOrchestrator:
         if snapshot:
             snapshot.pane_captures[target] = (lines, result.stdout)
         return result.stdout
+
+    def wait_until_ready(
+        self,
+        target: str,
+        provider_name: str,
+        timeout: int = READY_TIMEOUT_SECONDS,
+        state_dir: Path | None = None,
+        lines: int = 80,
+    ) -> tuple[bool, str]:
+        """Wait for a provider-specific ready banner or prompt to appear."""
+        indicators = get_provider(provider_name).ready_indicators
+        if not indicators:
+            return True, ""
+
+        deadline = time.monotonic() + timeout
+        latest = ""
+        while time.monotonic() < deadline:
+            if self.is_pane_dead(target, state_dir=state_dir):
+                break
+            try:
+                latest = self.capture_pane(target, lines=lines, state_dir=state_dir)
+            except Exception:
+                latest = ""
+            if any(indicator in latest for indicator in indicators):
+                return True, latest
+            time.sleep(0.5)
+        return False, latest
 
     # ── Monitoring ───────────────────────────────────────────────
 
@@ -692,3 +762,10 @@ class TmuxOrchestrator:
                 stderr=result.stderr or result.stdout or "tmux returned a non-zero exit status.",
             )
         return result
+
+
+def _all_ready_indicators() -> list[str]:
+    indicators: list[str] = []
+    for provider in PROVIDERS.values():
+        indicators.extend(provider.ready_indicators)
+    return indicators

@@ -161,10 +161,11 @@ class RobustnessTests(unittest.TestCase):
 
     def test_cli_converts_tmux_errors_without_traceback(self) -> None:
         runner = CliRunner()
-        tmux_error = TmuxError(("tmux",), None, "tmux is not installed")
 
-        with patch.object(cli.TmuxOrchestrator, "ensure_available", side_effect=tmux_error):
-            result = runner.invoke(cli.app, ["init", "demo", "--working-dir", str(self.workdir)])
+        with patch("agentic_team.cli.tmux_version", return_value=None):
+            result = runner.invoke(cli.app, [
+                "init", "demo", "--provider", "claude", "--working-dir", str(self.workdir),
+            ])
 
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("tmux", result.output)
@@ -173,8 +174,12 @@ class RobustnessTests(unittest.TestCase):
     def test_init_rolls_back_state_when_tmux_creation_fails(self) -> None:
         runner = CliRunner()
         tmux_error = TmuxError(("tmux", "new-session"), 1, "session creation failed")
+        fake_health = type("H", (), {"installed": True, "authenticated": True, "viable": True, "cli_path": "/usr/bin/claude", "detail": "ok", "install_hint": "", "login_hint": ""})()
 
         with (
+            patch("agentic_team.cli._resolve_provider_choice", return_value=("claude", False)),
+            patch("agentic_team.cli._ensure_tmux_available", return_value="tmux 3.4"),
+            patch("agentic_team.cli._ensure_provider_ready", return_value=fake_health),
             patch.object(cli.TmuxOrchestrator, "ensure_available", return_value=None),
             patch.object(cli.TmuxOrchestrator, "session_exists", return_value=False),
             patch.object(cli.TmuxOrchestrator, "create_session", side_effect=tmux_error),
@@ -192,11 +197,14 @@ class RobustnessTests(unittest.TestCase):
         runner = CliRunner()
         team = config.TeamConfig(name="demo", provider="claude", working_dir=str(self.workdir))
         config.save_workers(team.name, [])
+        fake_health = type("H", (), {"installed": True, "authenticated": True, "viable": True, "cli_path": "/usr/bin/claude", "detail": "ok", "install_hint": "", "login_hint": ""})()
 
+        fake_tmux = cli.TmuxOrchestrator(team.tmux_session)
         with (
             patch.object(cli, "_get_team", return_value=team),
-            patch.object(cli.TmuxOrchestrator, "ensure_available", return_value=None),
-            patch.object(cli.TmuxOrchestrator, "session_exists", return_value=True),
+            patch("agentic_team.cli._ensure_tmux_available", return_value="tmux 3.4"),
+            patch("agentic_team.cli._ensure_provider_ready", return_value=fake_health),
+            patch.object(cli, "_ensure_lead_started", return_value=fake_tmux),
             patch.object(
                 cli.TmuxOrchestrator,
                 "spawn_worker",
