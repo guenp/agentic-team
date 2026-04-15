@@ -459,13 +459,24 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
     workers = config.load_workers(team.name)
     worker_by_name = {w.name: w for w in workers}
 
+    # Match tasks to existing workers by task text
+    worker_by_task = {w.task: w for w in workers}
+
     new_tasks: list[taskfile.TaskEntry] = []
     rerun_tasks: list[taskfile.TaskEntry] = []
     running_skip = 0
 
     for entry in all_pending:
-        if entry.worker_name and entry.worker_name in worker_status_map:
-            ws = worker_status_map[entry.worker_name]
+        # Try annotation first, then match by task text
+        matched_worker = None
+        if entry.worker_name and entry.worker_name in worker_by_name:
+            matched_worker = worker_by_name[entry.worker_name]
+        elif entry.task in worker_by_task:
+            matched_worker = worker_by_task[entry.task]
+            entry.worker_name = matched_worker.name
+
+        if matched_worker and matched_worker.name in worker_status_map:
+            ws = worker_status_map[matched_worker.name]
             if ws == "running":
                 running_skip += 1
                 continue
@@ -517,7 +528,6 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
             f"tmux session {team.tmux_session!r} not found. Run 'team init' first."
         )
 
-    updates: dict[int, taskfile.TaskEntry] = {}
     spawned = 0
     resumed = 0
 
@@ -587,13 +597,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
             spawned += 1
             click.echo(f"  {worker_name} | {entry.task}")
 
-        # Writeback annotation
-        entry.worker_name = worker_name
-        entry.worker_status = "running"
-        updates[entry.line_number] = entry
-
     config.save_workers(team.name, workers)
-    taskfile.update_task_file(path, updates)
 
     # Try to deliver pending prompts (agents may need a moment to start)
     import time

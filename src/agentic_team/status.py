@@ -195,36 +195,25 @@ def _is_interactive_idle(worker: WorkerState, tmux: TmuxOrchestrator) -> bool:
     and removes it when idle. This is the most reliable signal.
     """
     try:
-        output = tmux.capture_pane(worker.tmux_window, lines=30)
+        output = tmux.capture_pane(worker.tmux_window, lines=80)
     except Exception:
         return False
 
-    # If "esc to interrupt" is visible, the agent is still working
-    if "esc to interrupt" in output:
+    # Only check the LAST few lines for "esc to interrupt" — the status
+    # bar is at the bottom of the pane. Old renders in scrollback may
+    # still contain "esc to interrupt" from when the agent was working.
+    tail = "\n".join(output.splitlines()[-5:])
+    if "esc to interrupt" in tail:
         return False
 
-    # Check that the task was actually sent (not just sitting at a fresh prompt)
-    task_words = worker.task.split()[:3]
-    if task_words and not any(w in output for w in task_words[:2]):
-        return False  # Task hasn't appeared in the pane yet
+    # The agent is not actively working. Confirm it actually did work
+    # (not just sitting at a fresh prompt that hasn't received input yet).
+    # Only agent output markers count — task text alone just means the
+    # prompt was sent, not that the agent processed it.
+    if "\u23fa" in output or "⎿" in output:
+        return True
 
-    # The task was sent and the agent is not showing "esc to interrupt" —
-    # check there's actual output (not just the prompt echoing the task)
-    lines = output.splitlines()
-    task_start = -1
-    for i, line in enumerate(lines):
-        if task_words and all(w in line for w in task_words[:2]):
-            task_start = i
-
-    if task_start < 0:
-        return False
-
-    # Look for agent output markers after the task line
-    # (tool calls, response text blocks marked with ⏺)
-    after_task = "\n".join(lines[task_start + 1:])
-    has_output = "\u23fa" in after_task or "⎿" in after_task  # ⏺ or ⎿ (tool output)
-
-    return has_output
+    return False
 
 
 def _try_extract_session_id(config: TeamConfig, worker: WorkerState) -> None:
