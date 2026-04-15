@@ -6,8 +6,9 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -39,11 +40,30 @@ class TmuxWindow:
     pane_dead: bool
 
 
+@dataclass
+class TmuxSnapshot:
+    """Cached tmux state for a single refresh cycle."""
+
+    windows: dict[str, TmuxWindow] = field(default_factory=dict)
+    pane_dead: dict[str, bool] = field(default_factory=dict)
+    resolved_targets: dict[str, str] = field(default_factory=dict)
+    multi_targets: tuple[str, ...] = ()
+    pane_captures: dict[str, tuple[int, str]] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.monotonic)
+
+    def has_capture(self, target: str, lines: int) -> bool:
+        cached = self.pane_captures.get(target)
+        return cached is not None and cached[0] >= lines
+
+
 class TmuxOrchestrator:
     """Manages a tmux session for an agentic team."""
 
     def __init__(self, session_name: str) -> None:
         self.session_name = session_name
+        self._snapshot_cache: dict[str, TmuxSnapshot] = {}
+        self._multi_targets_cache: dict[str, tuple[str, ...]] = {}
+        self._resolved_target_cache: dict[str, dict[str, str]] = {}
 
     @staticmethod
     def ensure_available() -> None:
@@ -152,7 +172,11 @@ class TmuxOrchestrator:
         pending_dir.mkdir(parents=True, exist_ok=True)
         (pending_dir / target).write_text(prompt)
 
-    def deliver_pending_prompts(self, state_dir: Path) -> list[str]:
+    def deliver_pending_prompts(
+        self,
+        state_dir: Path,
+        snapshot: TmuxSnapshot | None = None,
+    ) -> list[str]:
         """Check for pending prompts and deliver them if the agent is ready.
 
         Returns list of worker names that received their prompts.
@@ -175,7 +199,13 @@ class TmuxOrchestrator:
 
             # Check if the agent is ready by scanning the pane for known
             # prompt indicators from each provider's startup output.
-            output = self.capture_pane_safe(target, lines=30, context=f"checking agent readiness for {target}")
+            output = self.capture_pane_safe(
+                target,
+                lines=30,
+                state_dir=state_dir,
+                snapshot=snapshot,
+                context=f"checking agent readiness for {target}",
+            )
             if output is None:
                 continue
             ready = any(
@@ -191,7 +221,7 @@ class TmuxOrchestrator:
                 try:
                     # TUI agents (Codex, Gemini) need a brief delay
                     # between text input and Enter for the submit to register
-                    self.send_keys(target, prompt, delay=0.5)
+                    self.send_keys(target, prompt, delay=0.5, state_dir=state_dir)
                 except TmuxError as exc:
                     warnings.warn(
                         f"Could not deliver pending prompt to {target}: {exc}",
@@ -264,29 +294,40 @@ class TmuxOrchestrator:
         self.send_keys(target, wrapped, state_dir=state_dir)
 
     def capture_pane(
-        self, target: str, lines: int = 50, state_dir: Path | None = None,
+        self,
+        target: str,
+        lines: int = 50,
+        state_dir: Path | None = None,
+        snapshot: TmuxSnapshot | None = None,
     ) -> str:
         """Capture the last N lines of a pane."""
-        resolved = self._resolve_target(target, state_dir)
+        if snapshot and snapshot.has_capture(target, lines):
+            return self._slice_capture(snapshot.pane_captures[target][1], lines)
+
+        resolved = self._resolve_target(target, state_dir, snapshot=snapshot)
         result = self._run([
             "tmux", "capture-pane",
             "-t", f"{self.session_name}:{resolved}",
             "-p",
             "-S", f"-{lines}",
         ])
+        if snapshot:
+            snapshot.pane_captures[target] = (lines, result.stdout)
         return result.stdout
 
     # ── Monitoring ───────────────────────────────────────────────
 
-    def list_windows(self) -> list[TmuxWindow]:
+    def list_windows(self, snapshot: TmuxSnapshot | None = None) -> list[TmuxWindow]:
         """List all windows in the session."""
-        if not self.session_exists():
-            return []
+        if snapshot is not None:
+            return list(snapshot.windows.values())
         result = self._run([
             "tmux", "list-windows",
             "-t", self.session_name,
             "-F", "#{window_index}\t#{window_name}\t#{pane_pid}\t#{pane_dead}",
-        ])
+        ], check=False)
+        if result.returncode != 0:
+            return []
         windows = []
         for line in result.stdout.strip().splitlines():
             if not line.strip():
@@ -301,10 +342,16 @@ class TmuxOrchestrator:
         return windows
 
     def is_pane_dead(
-        self, target: str, state_dir: Path | None = None,
+        self,
+        target: str,
+        state_dir: Path | None = None,
+        snapshot: TmuxSnapshot | None = None,
     ) -> bool:
         """Check if a pane's process has exited."""
-        resolved = self._resolve_target(target, state_dir)
+        if snapshot and target in snapshot.pane_dead:
+            return snapshot.pane_dead[target]
+
+        resolved = self._resolve_target(target, state_dir, snapshot=snapshot)
         result = self._run([
             "tmux", "list-panes",
             "-t", f"{self.session_name}:{resolved}",
@@ -378,6 +425,7 @@ class TmuxOrchestrator:
                 return
             # Stale file (session was restarted, etc.) — clean up and rejoin.
             multi_file.unlink()
+            self._invalidate_state_cache(state_dir)
 
         host = targets[0]
 
@@ -400,6 +448,7 @@ class TmuxOrchestrator:
         # Persist the join order so break_multi can undo it
         multi_file.parent.mkdir(parents=True, exist_ok=True)
         multi_file.write_text("\n".join(targets))
+        self._invalidate_state_cache(state_dir)
 
         self.attach(host)
 
@@ -444,11 +493,47 @@ class TmuxOrchestrator:
             ], check=False)
 
         multi_file.unlink(missing_ok=True)
+        self._invalidate_state_cache(state_dir)
         return targets
 
     # ── Internals ────────────────────────────────────────────────
 
-    def _resolve_target(self, target: str, state_dir: Path | None) -> str:
+    def get_snapshot(
+        self,
+        state_dir: Path | None = None,
+        max_age: float = 0,
+    ) -> TmuxSnapshot:
+        """Return a cached tmux snapshot, optionally reusing a recent one."""
+        cache_key = self._state_cache_key(state_dir)
+        cached = self._snapshot_cache.get(cache_key)
+        now = time.monotonic()
+        if cached is not None and max_age > 0 and now - cached.created_at <= max_age:
+            return cached
+
+        windows = {w.name: w for w in self.list_windows()}
+        multi_targets = self._load_multi_targets(state_dir)
+        resolved_targets = self._resolved_targets_for_state(state_dir).copy()
+        pane_dead = {name: window.pane_dead for name, window in windows.items()}
+
+        if multi_targets:
+            pane_dead.update(self._list_multi_pane_dead(multi_targets))
+
+        snapshot = TmuxSnapshot(
+            windows=windows,
+            pane_dead=pane_dead,
+            resolved_targets=resolved_targets,
+            multi_targets=multi_targets,
+            created_at=now,
+        )
+        self._snapshot_cache[cache_key] = snapshot
+        return snapshot
+
+    def _resolve_target(
+        self,
+        target: str,
+        state_dir: Path | None,
+        snapshot: TmuxSnapshot | None = None,
+    ) -> str:
         """Resolve a worker name to its tmux target.
 
         In multi mode, workers are joined into a single host window as
@@ -456,17 +541,11 @@ class TmuxOrchestrator:
         ``host.pane_index`` so that capture-pane and is_pane_dead still
         work.  Outside multi mode, returns the target unchanged.
         """
+        if snapshot and target in snapshot.resolved_targets:
+            return snapshot.resolved_targets[target]
         if state_dir is None:
             return target
-        multi_file = state_dir / "multi_targets"
-        if not multi_file.exists():
-            return target
-        targets = multi_file.read_text().strip().splitlines()
-        if target in targets:
-            host = targets[0]
-            pane_index = targets.index(target)
-            return f"{host}.{pane_index}"
-        return target
+        return self._resolved_targets_for_state(state_dir).get(target, target)
 
     def _count_panes(self, target: str) -> int:
         """Return the number of panes in a window (0 if it doesn't exist)."""
@@ -483,6 +562,7 @@ class TmuxOrchestrator:
         target: str,
         lines: int,
         state_dir: Path | None = None,
+        snapshot: TmuxSnapshot | None = None,
         retries: int = CAPTURE_RETRY_BUDGET,
         context: str = "capturing tmux pane",
     ) -> str | None:
@@ -490,7 +570,7 @@ class TmuxOrchestrator:
         last_error: TmuxError | None = None
         for _ in range(retries):
             try:
-                return self.capture_pane(target, lines=lines, state_dir=state_dir)
+                return self.capture_pane(target, lines=lines, state_dir=state_dir, snapshot=snapshot)
             except TmuxError as exc:
                 last_error = exc
         if last_error is not None:
@@ -499,6 +579,91 @@ class TmuxOrchestrator:
                 stacklevel=2,
             )
         return None
+
+    def _slice_capture(self, output: str, lines: int) -> str:
+        if lines <= 0:
+            return ""
+        captured_lines = output.splitlines()
+        if len(captured_lines) <= lines:
+            return output
+        return "\n".join(captured_lines[-lines:])
+
+    def _list_multi_pane_dead(self, targets: tuple[str, ...]) -> dict[str, bool]:
+        if not targets:
+            return {}
+        host = targets[0]
+        result = self._run([
+            "tmux", "list-panes",
+            "-t", f"{self.session_name}:{host}",
+            "-F", "#{pane_index}\t#{pane_dead}",
+        ], check=False)
+        if result.returncode != 0:
+            return {target: True for target in targets}
+
+        pane_dead: dict[str, bool] = {}
+        for line in result.stdout.strip().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            pane_index = int(parts[0])
+            if 0 <= pane_index < len(targets):
+                pane_dead[targets[pane_index]] = parts[1] == "1"
+
+        for target in targets:
+            pane_dead.setdefault(target, True)
+        return pane_dead
+
+    def _load_multi_targets(self, state_dir: Path | None) -> tuple[str, ...]:
+        if state_dir is None:
+            return ()
+        cache_key = self._state_cache_key(state_dir)
+        cached = self._multi_targets_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        multi_file = state_dir / "multi_targets"
+        if not multi_file.exists():
+            targets: tuple[str, ...] = ()
+        else:
+            targets = tuple(
+                line.strip() for line in multi_file.read_text().splitlines()
+                if line.strip()
+            )
+
+        self._multi_targets_cache[cache_key] = targets
+        return targets
+
+    def _resolved_targets_for_state(self, state_dir: Path | None) -> dict[str, str]:
+        if state_dir is None:
+            return {}
+        cache_key = self._state_cache_key(state_dir)
+        cached = self._resolved_target_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        targets = self._load_multi_targets(state_dir)
+        if not targets:
+            resolved: dict[str, str] = {}
+        else:
+            host = targets[0]
+            resolved = {
+                target: f"{host}.{index}"
+                for index, target in enumerate(targets)
+            }
+
+        self._resolved_target_cache[cache_key] = resolved
+        return resolved
+
+    def _invalidate_state_cache(self, state_dir: Path) -> None:
+        cache_key = self._state_cache_key(state_dir)
+        self._snapshot_cache.pop(cache_key, None)
+        self._multi_targets_cache.pop(cache_key, None)
+        self._resolved_target_cache.pop(cache_key, None)
+
+    def _state_cache_key(self, state_dir: Path | None) -> str:
+        return str(state_dir.resolve()) if state_dir is not None else ""
 
     def _run(
         self,

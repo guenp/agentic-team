@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import warnings
+from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -510,6 +511,7 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
     if not matched:
         raise click.ClickException(f"No worker matching {worker_name!r}")
     worker = next(w for w in workers if w.name == matched)
+    state_dir = config.STATE_DIR / team.name
 
     if worker.mode == "interactive":
         # Interactive agent is still alive — send directly as input
@@ -522,7 +524,7 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
         with ExitStack() as rollback:
             rollback.callback(_restore_workers_snapshot, team.name, original_workers)
             config.save_workers(team.name, workers)
-            tmux.send_keys(worker.tmux_window, text)
+            tmux.send_keys(worker.tmux_window, text, state_dir=state_dir)
             rollback.pop_all()
         click.echo(f"Sent to {matched}.")
     elif worker.mode == "oneshot" and worker.session_id:
@@ -535,7 +537,6 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
             worker.provider, worker.session_id, text,
             log_path=log_path,
         )
-        state_dir = config.STATE_DIR / team.name
         window_names = {window.name for window in tmux.list_windows()}
         _mark_worker_running(worker)
         with ExitStack() as rollback:
@@ -564,9 +565,9 @@ def resume(worker_name: str, prompt: tuple[str, ...]) -> None:
 def status_cmd(worker_name: str | None, verbose: bool) -> None:
     """Show the status of the active team."""
     team = _get_team()
-    st = status.get_team_status(team)
 
     if not verbose:
+        st = status.get_team_status(team)
         status.format_status(st)
         return
 
@@ -583,7 +584,7 @@ def status_cmd(worker_name: str | None, verbose: bool) -> None:
     else:
         targets = [w.name for w in workers]
 
-    _status_live(team, tmux, state_dir, st, targets)
+    _status_live(team, tmux, state_dir, targets)
 
 
 # ── team wait ──────────────────────────────────────────────────
@@ -862,6 +863,7 @@ def _pane_tail(
     target: str,
     n: int = 5,
     state_dir: Path | None = None,
+    snapshot=None,
 ) -> str:
     """Capture the last *n* meaningful lines from a pane.
 
@@ -871,6 +873,7 @@ def _pane_tail(
         target,
         lines=30,
         state_dir=state_dir,
+        snapshot=snapshot,
         context=f"capturing pane tail for {target}",
     )
     if raw is None:
@@ -888,7 +891,6 @@ def _status_live(
     team: config.TeamConfig,
     tmux: TmuxOrchestrator,
     state_dir: Path,
-    st: dict,
     targets: list[str],
 ) -> None:
     """Live-updating status with tailed pane output. Press q to quit."""
@@ -905,11 +907,12 @@ def _status_live(
 
     console = Console()
     status_colors = {"running": "yellow", "done": "green", "error": "red"}
+    poll_interval = 1.0
 
     is_tty = sys.stdin.isatty()
 
-    def _render_panels() -> Group:
-        st = status.get_team_status(team)
+    def _render_panels(snapshot) -> Group:
+        st = status.get_team_status(team, tmux=tmux, snapshot=snapshot)
         worker_map = {w["name"]: w for w in st["workers"]}
 
         panels = []
@@ -922,7 +925,13 @@ def _status_live(
                 task = task[:57] + "..."
             color = status_colors.get(ws, "white")
 
-            tail = _pane_tail(tmux, name, n=5, state_dir=state_dir)
+            tail = _pane_tail(
+                tmux,
+                name,
+                n=5,
+                state_dir=state_dir,
+                snapshot=snapshot,
+            )
 
             header = Text()
             header.append(f"  {ws}", style=f"bold {color}")
@@ -939,7 +948,8 @@ def _status_live(
 
     # No tty: print a single snapshot and exit
     if not is_tty:
-        console.print(_render_panels())
+        snapshot = tmux.get_snapshot(state_dir, max_age=0)
+        console.print(_render_panels(snapshot))
         return
 
     # Interactive: live-updating display with 'q' to quit
@@ -956,7 +966,8 @@ def _status_live(
                     if ch in ("q", "Q"):
                         break
 
-                live.update(Group(_render_panels(), Text("press q to quit", style="dim")))
+                snapshot = tmux.get_snapshot(state_dir, max_age=poll_interval)
+                live.update(Group(_render_panels(snapshot), Text("press q to quit", style="dim")))
                 time.sleep(0.5)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -1011,6 +1022,18 @@ def attach(window: str | None, multi: bool) -> None:
 
 
 # ── team logs ────────────────────────────────────────────────────
+
+
+def _tail_log_lines(path: Path, tail: int, small_file_limit: int = 128 * 1024) -> list[str]:
+    """Read the last ``tail`` log lines without loading large files fully."""
+    if tail <= 0 or not path.exists():
+        return []
+
+    if path.stat().st_size <= small_file_limit:
+        return path.read_text().splitlines()[-tail:]
+
+    with path.open(errors="replace") as handle:
+        return list(deque((line.rstrip("\n") for line in handle), maxlen=tail))
 
 
 @app.command()
@@ -1071,8 +1094,7 @@ def logs(worker_name: str | None, tail: int, show_all: bool) -> None:
         log_path = session_log_dir / f"{matched}.log" if session_log_dir else None
         has_log = log_path and log_path.exists() and log_path.stat().st_size > 0
         if has_log:
-            lines = log_path.read_text().splitlines()
-            for line in lines[-tail:]:
+            for line in _tail_log_lines(log_path, tail):
                 click.echo(line)
         elif tmux.session_exists():
             output = tmux.capture_pane_safe(
@@ -1116,6 +1138,11 @@ def send_to_worker(worker_name: str, message: tuple[str, ...]) -> None:
 
     state_dir = config.STATE_DIR / team.name
     tmux.send_keys(matched, text, state_dir=state_dir)
+    for worker in workers:
+        if worker.name == matched:
+            worker.status = "running"
+            break
+    config.save_workers(team.name, workers)
     click.echo(f"Sent to {matched}.")
 
 
@@ -1386,6 +1413,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
     state_dir = config.STATE_DIR / team.name
     spawned = 0
     resumed = 0
+    state_dir = config.STATE_DIR / team.name
 
     with ExitStack() as rollback:
         rollback.callback(_restore_workers_snapshot, team.name, original_workers)
@@ -1406,7 +1434,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
                 continue
 
             if action.kind == "rerun-interactive":
-                tmux.send_keys(action.worker_name, action.task)
+                tmux.send_keys(action.worker_name, action.task, state_dir=state_dir)
                 resumed += 1
                 click.echo(f"  {action.worker_name} | {action.task} (rerun)")
                 continue
@@ -1468,23 +1496,13 @@ def sync(task_file: str) -> None:
         if entry.done and not entry.worker_name:
             continue  # Already done before we touched it
 
-        # Match task to worker by checking annotations in the file
-        # Re-parse the line to find the worker name from the ← annotation
-        lines = path.read_text().splitlines()
-        if entry.line_number < len(lines):
-            line = lines[entry.line_number]
-            import re
-            arrow_match = re.search(r"←\s*(\S+)", line)
-            if arrow_match:
-                wname = arrow_match.group(1)
-                if wname in worker_map:
-                    w = worker_map[wname]
-                    entry.worker_name = wname
-                    entry.worker_status = w["status"]
-                    entry.elapsed = w["elapsed"]
-                    if w["status"] == "done":
-                        entry.done = True
-                    updates[entry.line_number] = entry
+        if entry.worker_name and entry.worker_name in worker_map:
+            w = worker_map[entry.worker_name]
+            entry.worker_status = w["status"]
+            entry.elapsed = w["elapsed"]
+            if w["status"] == "done":
+                entry.done = True
+            updates[entry.line_number] = entry
 
     if not updates:
         click.echo("No updates to sync.")
