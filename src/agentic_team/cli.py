@@ -358,10 +358,15 @@ def logs(worker_name: str | None, tail: int, raw: bool, show_all: bool) -> None:
             task = w.task if w else ""
             if len(task) > 60:
                 task = task[:57] + "..."
-            header = f" {matched} ({st}) — {task} "
-            click.echo(f"\n{'━' * 60}")
-            click.echo(f"┃{header}")
-            click.echo(f"{'━' * 60}")
+            status_color = {"running": "yellow", "done": "green", "error": "red"}.get(st, "white")
+            click.echo()
+            click.echo(click.style(f"{'━' * 60}", fg="bright_black"))
+            click.echo(
+                click.style(f"  {matched}", fg="cyan", bold=True)
+                + click.style(f"  {st}", fg=status_color)
+                + click.style(f"  {task}", fg="bright_black")
+            )
+            click.echo(click.style(f"{'━' * 60}", fg="bright_black"))
 
         if raw:
             log_path = config.log_dir_for_team(team.name) / f"{matched}.log"
