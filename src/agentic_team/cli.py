@@ -424,11 +424,12 @@ def wait(timeout: int, interval: int) -> None:
             # Print table on first poll or when any worker's status changed
             if cur_statuses != prev_statuses:
                 elapsed = int(time.time() - start)
-                click.echo(f"\n--- {elapsed}s elapsed (q to quit) ---")
+                click.echo(f"\n--- {elapsed}s elapsed ---")
                 status.format_status(st)
                 if waiting:
                     names = ", ".join(w["name"] for w in waiting)
                     click.echo(f"⚠ {len(waiting)} worker(s) waiting for input: {names}")
+                click.secho("press q to quit", dim=True)
                 prev_statuses = cur_statuses
 
             if not active:
