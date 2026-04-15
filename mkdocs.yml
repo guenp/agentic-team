@@ -6,7 +6,7 @@ repo_url: https://github.com/guenp/agentic-team
 theme:
   name: material
   logo: logo_thumb.png
-  favicon: logo_thumb.png
+  favicon: favicon.png
   palette:
     - scheme: default
       primary: deep purple
