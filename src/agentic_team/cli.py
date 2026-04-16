@@ -422,6 +422,12 @@ def doctor(provider: str | None) -> None:
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
     help="Working directory for agents.",
 )
+@click.option(
+    "--worktree/--no-worktree",
+    "use_worktrees",
+    default=False,
+    help="Enable git worktree isolation for workers (default: off).",
+)
 def init(
     name: str,
     provider: str | None,
@@ -430,6 +436,7 @@ def init(
     permissions: str,
     max_workers: int,
     working_dir: str,
+    use_worktrees: bool,
 ) -> None:
     """Initialize a new team and start the team lead agent."""
     provider_name, auto_detected = _resolve_provider_choice(provider)
@@ -442,6 +449,7 @@ def init(
         model=model,
         worker_mode=worker_mode,
         permissions=permissions,
+        use_worktrees=use_worktrees,
         max_workers=max_workers,
         working_dir=working_dir,
     )

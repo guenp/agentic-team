@@ -86,6 +86,20 @@ class TestInitCommand:
         assert not (cfg["state_dir"] / "demo" / "workers.toml").exists()
         assert not cfg["active_link"].exists()
 
+    def test_init_worktree_flag(self, isolated_config):
+        """--worktree sets use_worktrees=True in the saved config."""
+        result = self._invoke_init(isolated_config, extra_args=["--worktree"])
+        assert result.exit_code == 0
+        team = config.load_team("demo")
+        assert team.use_worktrees is True
+
+    def test_init_default_no_worktree(self, isolated_config):
+        """Without --worktree, use_worktrees defaults to False."""
+        result = self._invoke_init(isolated_config)
+        assert result.exit_code == 0
+        team = config.load_team("demo")
+        assert team.use_worktrees is False
+
     def test_init_rejects_running_team(self, isolated_config):
         cfg = isolated_config
         # Pre-create the team so it looks like it already exists
