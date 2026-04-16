@@ -512,6 +512,34 @@ def init(
     click.echo(f"\nRun 'team attach' to connect, or 'team \"your prompt\"' to send a task.")
 
 
+# ── team prompt ────────────────────────────────────────────────
+
+
+@app.command("prompt")
+@click.option("--dry-run", is_flag=True, help="Print the prompt instead of sending it.")
+@click.option("--custom", type=click.Path(exists=True), help="Custom prompt file to send.")
+def prompt_cmd(dry_run: bool, custom: str | None) -> None:
+    """Re-send the team lead system prompt to the active lead session."""
+    team = _get_team()
+
+    if custom:
+        text = Path(custom).read_text()
+    else:
+        text = agents.build_team_lead_system_prompt(team)
+
+    if dry_run:
+        click.echo(text)
+        return
+
+    tmux = _ensure_lead_started(team)
+    preamble = (
+        "SYSTEM PROMPT REMINDER — The following is your original system prompt. "
+        "Re-read it carefully and follow these instructions for the rest of this session."
+    )
+    tmux.send_keys("lead", f"{preamble}\n\n{text}")
+    click.echo("Lead system prompt re-sent.")
+
+
 # ── team send (also bare `team "prompt"`) ────────────────────────
 
 

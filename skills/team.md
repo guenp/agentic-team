@@ -22,6 +22,8 @@ When the user invokes `/team <command>`, execute the corresponding `team` CLI co
 | `/team stop <name>` | `team stop-worker <name>` |
 | `/team clear` | `team clear` (remove done workers and close their tmux windows) |
 | `/team wait` | `team wait` (block until all workers finish) |
+| `/team prompt` | `team prompt` (re-send lead system prompt) |
+| `/team prompt --dry-run` | `team prompt --dry-run` (print the prompt without sending) |
 | `/team standup` | `team status`, then `team logs` for each worker, then summarize |
 
 If the user gives a freeform request (e.g. `/team fix all the TODOs`), break it down into tasks and spawn workers yourself.
