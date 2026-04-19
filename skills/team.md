@@ -26,6 +26,27 @@ When the user invokes `/team <command>`, execute the corresponding `team` CLI co
 
 If the user gives a freeform request (e.g. `/team fix all the TODOs`), break it down into tasks and spawn workers yourself.
 
+## Folder / project routing
+
+When the user's prompt ends with **"in `<folder or project>`"**, extract the path and spawn the worker in that directory immediately. Examples:
+
+| User says | You run |
+|-----------|---------|
+| `/team fix the auth bug in ~/repos/backend` | `team spawn-worker --task "fix the auth bug" --name fix-auth --working-dir ~/repos/backend` |
+| `/team add unit tests in ./services/api` | `team spawn-worker --task "add unit tests" --name add-unit-tests --working-dir ./services/api` |
+| `/team refactor the parser in /Users/me/projects/compiler` | `team spawn-worker --task "refactor the parser" --name refactor-parser --working-dir /Users/me/projects/compiler` |
+
+**Rules for folder routing:**
+
+1. Look for the pattern `in <path>` at the end of the prompt, where `<path>` looks like a filesystem path (starts with `~/`, `./`, `../`, `/`, or contains `/`).
+2. Strip the `in <path>` suffix to get the task description.
+3. Resolve `~` to the user's home directory. Resolve relative paths against the team's working directory.
+4. Pass the resolved path as `--working-dir` to `team spawn-worker`.
+5. Spawn the worker **immediately** — don't ask for confirmation, don't break it into sub-tasks. One prompt = one worker.
+6. After spawning, use `team wait` to block until done, then review logs and report back.
+
+If the path doesn't exist, tell the user and don't spawn.
+
 ## Running a task file
 
 When the user says `/team run <file>`:
