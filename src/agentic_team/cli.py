@@ -1778,6 +1778,7 @@ def clear() -> None:
 
     team = _get_team()
     tmux = TmuxOrchestrator(team.tmux_session)
+    status.get_team_status(team)
     workers = config.load_workers(team.name)
 
     # Kill tmux windows for done workers
