@@ -56,6 +56,7 @@ team init [OPTIONS] NAME
 | `--permissions [auto\|default\|dangerously-skip-permissions]` | Permission mode saved in team config. Default `auto`. |
 | `--max-workers INTEGER` | Maximum concurrent workers. Default `6`. |
 | `-C, --working-dir DIRECTORY` | Default working directory for lead and workers. Default `.` (current directory). |
+| `--worktree / --no-worktree` | Enable git worktree isolation for workers. Each worker gets its own branch and worktree. Default `--no-worktree` (off). |
 
 Behavior notes:
 

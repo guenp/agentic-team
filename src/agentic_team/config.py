@@ -40,7 +40,7 @@ class TeamConfig:
     model: str | None = None
     worker_mode: str = "interactive"  # default mode for workers
     permissions: str = "auto"  # "auto" | "default" | "dangerously-skip-permissions"
-    use_worktrees: bool = True
+    use_worktrees: bool = False
     working_dir: str = "."
     max_workers: int = 6
     recursion: int = 1
