@@ -18,6 +18,7 @@ TEAMS_DIR = BASE_DIR / "teams"
 STATE_DIR = BASE_DIR / "state"
 LOGS_DIR = BASE_DIR / "logs"
 ACTIVE_LINK = BASE_DIR / "active"
+DEFAULTS_PATH = BASE_DIR / "defaults.toml"
 
 
 class StateFileError(RuntimeError):
@@ -28,6 +29,26 @@ def ensure_dirs() -> None:
     """Create the base directory structure if it doesn't exist."""
     for d in (TEAMS_DIR, STATE_DIR, LOGS_DIR):
         d.mkdir(parents=True, exist_ok=True)
+
+
+# ── User defaults ────────────────────────────────────────────────
+
+
+@dataclass
+class UserDefaults:
+    provider: str | None = None
+    model: str | None = None
+
+
+def load_defaults() -> UserDefaults:
+    """Load user defaults from ~/.agentic-team/defaults.toml."""
+    if not DEFAULTS_PATH.exists():
+        return UserDefaults()
+    data = _load_toml_file(DEFAULTS_PATH, "user defaults")
+    return UserDefaults(
+        provider=data.get("provider"),
+        model=data.get("model"),
+    )
 
 
 # ── Dataclasses ─────────────────────────────────────────────────

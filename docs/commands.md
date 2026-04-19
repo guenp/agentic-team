@@ -50,7 +50,7 @@ team init [OPTIONS] NAME
 
 | Option | Meaning |
 |--------|---------|
-| `-p, --provider [claude\|codex\|gemini]` | Team lead provider. Auto-detected when exactly one viable provider is found; required when multiple are available. |
+| `-p, --provider [claude\|codex\|gemini]` | Team lead provider. Auto-detected from `~/.agentic-team/defaults.toml` or first viable provider (claude > codex > gemini). |
 | `-m, --model TEXT` | Lead model override. No default (uses the provider's own default). |
 | `--worker-mode [oneshot\|interactive]` | Default mode for new workers. Default `interactive`. |
 | `--permissions [auto\|default\|dangerously-skip-permissions]` | Permission mode saved in team config. Default `auto`. |

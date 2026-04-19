@@ -264,20 +264,25 @@ def _resolve_provider_choice(
     *,
     team: config.TeamConfig | None = None,
 ) -> tuple[str, bool]:
-    """Resolve an explicit or auto-detected provider selection."""
+    """Resolve an explicit or auto-detected provider selection.
+
+    Priority: --provider flag → active team → defaults.toml → first viable.
+    """
     if provider_name:
         return provider_name, False
     if team:
         return team.provider, False
+
+    # Check user defaults (~/.agentic-team/defaults.toml)
+    defaults = config.load_defaults()
+    if defaults.provider:
+        return defaults.provider, True
 
     viable = []
     for name in PROVIDERS:
         health = get_provider_health(name)
         if health.viable:
             viable.append(name)
-
-    if len(viable) == 1:
-        return viable[0], True
 
     if not viable:
         lines = ["No viable providers found. Install and log in to at least one:"]
@@ -286,10 +291,8 @@ def _resolve_provider_choice(
             lines.append(f"  - {name}: {_provider_failure_hint(health)}")
         raise click.ClickException("\n".join(lines))
 
-    providers = ", ".join(viable)
-    raise click.ClickException(
-        f"Multiple viable providers detected ({providers}). Pass --provider explicitly."
-    )
+    # Default to the first viable provider (claude > codex > gemini)
+    return viable[0], True
 
 
 def _provider_failure_hint(health: ProviderHealth) -> str:
@@ -388,7 +391,11 @@ def doctor(provider: str | None) -> None:
         click.echo("  lead:      skipped (no active team yet)")
 
     if auto_detected:
-        click.echo(f"  default:   auto-detected {provider_name}")
+        defaults = config.load_defaults()
+        if defaults.provider == provider_name:
+            click.echo(f"  default:   {provider_name} (from defaults.toml)")
+        else:
+            click.echo(f"  default:   auto-detected {provider_name}")
 
 
 # ── team init ────────────────────────────────────────────────────
@@ -442,6 +449,11 @@ def init(
     provider_name, auto_detected = _resolve_provider_choice(provider)
     _ensure_tmux_available()
     _ensure_provider_ready(provider_name)
+
+    # Apply default model from defaults.toml if not specified
+    if model is None:
+        defaults = config.load_defaults()
+        model = defaults.model
 
     team = config.TeamConfig(
         name=name,

@@ -70,18 +70,21 @@ claude auth login
 # verify tmux + provider install/auth
 team doctor --provider claude
 
-# if exactly one provider is installed and authenticated, team init auto-detects it
+# team init auto-detects the provider (prefers claude > codex > gemini)
 team init myproject --working-dir ~/repos/myproject
-# otherwise pass --provider claude|codex|gemini
+# or set a persistent default in ~/.agentic-team/defaults.toml:
+#   provider = "claude"
+# or pass --provider claude|codex|gemini
 ```
 
 ## Quick start
 
 ```bash
-# Initialize a team (provider auto-detected when only one is viable)
+# Initialize a team (provider auto-detected; prefers claude > codex > gemini)
 team init myproject --working-dir ~/repos/myproject
 # or choose explicitly
 team init myproject --provider claude --working-dir ~/repos/myproject
+# or set a persistent default in ~/.agentic-team/defaults.toml
 
 # Send a task to the lead
 team "fix the auth bug and add tests for the login flow"
@@ -328,6 +331,7 @@ TEAM_NAME=other-team team logs lead
 
 ```text
 ~/.agentic-team/
+├── defaults.toml          # optional: provider/model defaults
 ├── teams/
 │   └── myproject.toml
 ├── state/

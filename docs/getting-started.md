@@ -48,7 +48,18 @@ team doctor --provider claude
 team init myproject --provider claude --working-dir ~/repos/myproject
 ```
 
-If exactly one provider is installed and authenticated, `--provider` can be omitted and `team init` will auto-detect it.
+`--provider` can usually be omitted — `team init` resolves the provider in this order:
+
+1. `--provider` flag (explicit choice)
+2. `~/.agentic-team/defaults.toml` (persistent user default)
+3. First viable provider on `PATH` (claude > codex > gemini)
+
+To set a persistent default, create `~/.agentic-team/defaults.toml`:
+
+```toml
+provider = "claude"
+model = "opus"       # optional
+```
 
 This does four things:
 
