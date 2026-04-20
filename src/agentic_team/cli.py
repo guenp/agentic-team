@@ -12,6 +12,7 @@ from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import click
@@ -51,7 +52,7 @@ class TeamGroup(click.Group):
 
 
 @click.group(cls=TeamGroup)
-@click.version_option(version="0.1.0", prog_name="agentic-team")
+@click.version_option(version=_pkg_version("agentic-team"), prog_name="agentic-team")
 @click.option(
     "--team", "-T",
     "team_name",
