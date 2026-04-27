@@ -261,7 +261,8 @@ team standup [--timeout INTEGER] [-v]
 ```bash
 team spawn-worker -t TASK [--mode oneshot|interactive]
                   [--provider claude|codex|gemini] [--model MODEL]
-                  [-n NAME] [-C DIRECTORY] [-r SESSION_ID]
+                  [--timeout SECONDS] [-n NAME] [-C DIRECTORY]
+                  [-r SESSION_ID]
 
 team status [WORKER_NAME] [-v]
 team logs [WORKER_NAME] [-n TAIL] [-a]

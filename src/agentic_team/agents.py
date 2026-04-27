@@ -17,11 +17,12 @@ tasks to worker agents that run in parallel.
 
 ## Available Commands (run via Bash)
 
-- `team spawn-worker --task "description" --name <short-name> [--mode oneshot|interactive] [--provider claude|codex|gemini] [--working-dir <path>] [--resume-session <session-id>]`
+- `team spawn-worker --task "description" --name <short-name> [--mode oneshot|interactive] [--provider claude|codex|gemini] [--timeout <seconds>] [--working-dir <path>] [--resume-session <session-id>]`
   Spawn a new worker agent. Always provide --name with a short (1-2 word, \
 kebab-case) name that describes the task, e.g. "fix-auth", "add-tests", \
 "update-docs". Use "interactive" (default) for tasks needing back-and-forth, \
-"oneshot" for fire-and-forget tasks. Use --working-dir to run a worker in a \
+"oneshot" for fire-and-forget tasks. Use --timeout to wait longer for slow \
+interactive startups. Use --working-dir to run a worker in a \
 specific directory. Use --resume-session to continue an existing Claude or \
 Gemini session.
 
@@ -297,5 +298,4 @@ def lead_runtime_flags(config: TeamConfig) -> list[str]:
         permissions=config.permissions,
         mode="interactive",
     )
-
 

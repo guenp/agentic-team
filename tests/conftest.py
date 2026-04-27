@@ -111,7 +111,7 @@ class FakeTmux:
     def spawn_worker(
         self, window_name: str, command: str, working_dir: str,
         state_dir: Path, provider_name: str, mode: str = "interactive",
-        initial_prompt: str | None = None, timeout: int = 20,
+        initial_prompt: str | None = None, timeout: int = 60,
     ) -> None:
         self.spawned_workers.append({
             "window_name": window_name,
@@ -120,16 +120,18 @@ class FakeTmux:
             "provider_name": provider_name,
             "mode": mode,
             "initial_prompt": initial_prompt,
+            "timeout": timeout,
         })
 
     def create_session(
         self, working_dir: str, lead_command: str,
-        provider_name: str | None = None, timeout: int = 20,
+        provider_name: str | None = None, timeout: int = 60,
     ) -> None:
         self.created_sessions.append({
             "working_dir": working_dir,
             "lead_command": lead_command,
             "provider_name": provider_name,
+            "timeout": timeout,
         })
 
     @staticmethod

@@ -573,6 +573,13 @@ def send(prompt: tuple[str, ...]) -> None:
 @click.option("--model", default=None, help="Model override for this worker.")
 @click.option("--name", "-n", default=None, help="Custom name for the worker.")
 @click.option(
+    "--timeout",
+    default=READY_TIMEOUT_SECONDS,
+    type=int,
+    show_default=True,
+    help="Seconds to wait for an interactive worker ready banner.",
+)
+@click.option(
     "--working-dir", "-C",
     default=None,
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
@@ -589,6 +596,7 @@ def spawn_worker(
     provider: str | None,
     model: str | None,
     name: str | None,
+    timeout: int,
     working_dir: str | None,
     resume_session: str | None,
 ) -> None:
@@ -732,6 +740,7 @@ def spawn_worker(
             provider_name=provider,
             mode=mode,
             initial_prompt=initial_prompt,
+            timeout=timeout,
         )
         rollback.pop_all()
 
