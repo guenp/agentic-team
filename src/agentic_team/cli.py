@@ -84,6 +84,17 @@ def _get_team(ctx: click.Context | None = None) -> config.TeamConfig:
         )
 
 
+def _resolve_default_model(
+    provider_name: str,
+    team: config.TeamConfig | None = None,
+) -> str | None:
+    """Resolve the default model for a provider from user defaults, then team."""
+    defaults = config.load_defaults()
+    return defaults.get_model_for_provider(provider_name) or (
+        team.model if team else None
+    )
+
+
 @dataclass
 class _PathSnapshot:
     path: Path
@@ -451,10 +462,9 @@ def init(
     _ensure_tmux_available()
     _ensure_provider_ready(provider_name)
 
-    # Apply default model from defaults.toml if not specified
+    # Apply provider-specific default model from defaults.toml if not specified.
     if model is None:
-        defaults = config.load_defaults()
-        model = defaults.model
+        model = _resolve_default_model(provider_name)
 
     team = config.TeamConfig(
         name=name,
@@ -616,7 +626,8 @@ def spawn_worker(
     # Resolve defaults
     mode = mode or team.worker_mode
     provider = provider or team.provider
-    model = model or team.model
+    if model is None:
+        model = _resolve_default_model(provider, team)
     _ensure_tmux_available()
     _ensure_provider_ready(provider)
 
@@ -1538,7 +1549,7 @@ def run(task_file: str, limit: int | None, dry_run: bool, rerun: bool) -> None:
         mode = entry.mode or team.worker_mode
         if mode not in {"oneshot", "interactive"}:
             raise click.ClickException(f"Unsupported worker mode {mode!r} in {path}.")
-        model = entry.model or team.model
+        model = entry.model or _resolve_default_model(prov, team)
         workdir = entry.working_dir or team.working_dir
         if not Path(workdir).is_dir():
             raise click.ClickException(

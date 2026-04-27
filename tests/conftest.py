@@ -177,6 +177,7 @@ def isolated_config(tmp_path):
     state_dir = root / "state"
     logs_dir = root / "logs"
     active_link = root / "active"
+    defaults_path = root / "defaults.toml"
     workdir = root / "repo"
     workdir.mkdir()
 
@@ -186,6 +187,7 @@ def isolated_config(tmp_path):
         patch.object(config, "STATE_DIR", state_dir),
         patch.object(config, "LOGS_DIR", logs_dir),
         patch.object(config, "ACTIVE_LINK", active_link),
+        patch.object(config, "DEFAULTS_PATH", defaults_path),
         patch.object(status, "STATE_DIR", state_dir),
     ]
     for p in patches:
@@ -197,6 +199,7 @@ def isolated_config(tmp_path):
         "state_dir": state_dir,
         "logs_dir": logs_dir,
         "active_link": active_link,
+        "defaults_path": defaults_path,
         "workdir": workdir,
     }
 

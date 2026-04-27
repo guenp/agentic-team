@@ -17,10 +17,22 @@ from agentic_team.tmux import TmuxError
 from conftest import FakeTmux, fake_health
 
 
-def _setup_team(isolated_config, workers=None, provider="claude", use_worktrees=False):
+def _setup_team(
+    isolated_config,
+    workers=None,
+    provider="claude",
+    model=None,
+    use_worktrees=False,
+):
     """Create a team with optional pre-existing workers."""
     cfg = isolated_config
-    team = config.TeamConfig(name="demo", provider=provider, working_dir=str(cfg["workdir"]), use_worktrees=use_worktrees)
+    team = config.TeamConfig(
+        name="demo",
+        provider=provider,
+        model=model,
+        working_dir=str(cfg["workdir"]),
+        use_worktrees=use_worktrees,
+    )
     config.save_team(team)
     config.save_workers("demo", workers or [])
     config.set_active_team("demo")
@@ -106,6 +118,26 @@ class TestSpawnWorker:
         assert result.exit_code == 0
         workers = config.load_workers("demo")
         assert workers[0].provider == "codex"
+
+    def test_spawn_uses_provider_model_default(self, isolated_config):
+        cfg = isolated_config
+        cfg["defaults_path"].write_text(
+            "[models]\n"
+            'codex = "gpt-5.5"\n'
+            'claude = "opus"\n'
+        )
+        _setup_team(isolated_config, provider="claude", model="opus")
+
+        result, fake_tmux = self._invoke_spawn([
+            "--task", "fix bug",
+            "--provider", "codex",
+        ])
+
+        assert result.exit_code == 0
+        workers = config.load_workers("demo")
+        assert workers[0].provider == "codex"
+        assert workers[0].model == "gpt-5.5"
+        assert "--model gpt-5.5" in fake_tmux.spawned_workers[0]["command"]
 
     def test_spawn_accepts_custom_timeout(self, isolated_config):
         _setup_team(isolated_config)
