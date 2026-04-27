@@ -12,12 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "src"))
 from agentic_team.config import (
     StateFileError,
     TeamConfig,
+    UserDefaults,
     WorkerState,
     clear_active_team,
     create_session_log_dir,
     current_session_log_dir,
     get_active_team,
     get_active_team_name,
+    load_defaults,
     load_team,
     load_workers,
     save_team,
@@ -55,6 +57,39 @@ class TestWorkerStateDataclass:
         ws = WorkerState(name="alpha", task="fix bug")
         assert ws.started_at
         assert "T" in ws.started_at
+
+
+class TestUserDefaults:
+    def test_load_defaults_supports_provider_models(self, isolated_config):
+        cfg = isolated_config
+        cfg["defaults_path"].write_text(
+            'provider = "claude"\n'
+            'model = "fallback-model"\n'
+            "\n"
+            "[models]\n"
+            'codex = "gpt-5.5"\n'
+            'claude = "opus"\n'
+            'gemini = "gemini-2.5-pro"\n'
+        )
+
+        defaults = load_defaults()
+
+        assert defaults.provider == "claude"
+        assert defaults.model == "fallback-model"
+        assert defaults.provider_models == {
+            "codex": "gpt-5.5",
+            "claude": "opus",
+            "gemini": "gemini-2.5-pro",
+        }
+        assert defaults.get_model_for_provider("codex") == "gpt-5.5"
+
+    def test_get_model_for_provider_falls_back_to_global_model(self):
+        defaults = UserDefaults(
+            model="fallback-model",
+            provider_models={"claude": "opus"},
+        )
+
+        assert defaults.get_model_for_provider("gemini") == "fallback-model"
 
 
 class TestTomlRoundTrip:

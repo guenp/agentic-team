@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import tomllib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +38,11 @@ def ensure_dirs() -> None:
 class UserDefaults:
     provider: str | None = None
     model: str | None = None
+    provider_models: dict[str, str] = field(default_factory=dict)
+
+    def get_model_for_provider(self, provider: str) -> str | None:
+        """Return the configured model for a provider, falling back to global."""
+        return self.provider_models.get(provider) or self.model
 
 
 def load_defaults() -> UserDefaults:
@@ -45,9 +50,18 @@ def load_defaults() -> UserDefaults:
     if not DEFAULTS_PATH.exists():
         return UserDefaults()
     data = _load_toml_file(DEFAULTS_PATH, "user defaults")
+    provider_models = data.get("models", {})
+    if not isinstance(provider_models, dict):
+        provider_models = {}
+    provider_models = {
+        provider: model
+        for provider, model in provider_models.items()
+        if isinstance(model, str)
+    }
     return UserDefaults(
         provider=data.get("provider"),
         model=data.get("model"),
+        provider_models=provider_models,
     )
 
 

@@ -100,6 +100,20 @@ class TestInitCommand:
         team = config.load_team("demo")
         assert team.use_worktrees is False
 
+    def test_init_uses_provider_model_default(self, isolated_config):
+        cfg = isolated_config
+        cfg["defaults_path"].write_text(
+            "[models]\n"
+            'codex = "gpt-5.5"\n'
+            'claude = "opus"\n'
+        )
+
+        result = self._invoke_init(isolated_config, provider="codex")
+
+        assert result.exit_code == 0
+        team = config.load_team("demo")
+        assert team.model == "gpt-5.5"
+
     def test_init_rejects_running_team(self, isolated_config):
         cfg = isolated_config
         # Pre-create the team so it looks like it already exists
