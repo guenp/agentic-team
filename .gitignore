@@ -9,3 +9,5 @@ iTerm2
 site/
 demo/*.mp4
 demo/*.webm
+.claude/
+.worktrees/
