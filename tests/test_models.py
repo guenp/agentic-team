@@ -62,7 +62,7 @@ class TestFlagGeneration:
     def test_codex_oneshot_flags(self):
         flags = describe_provider_flags("codex", mode="oneshot")
         assert "--full-auto" in flags
-        assert "--quiet" in flags
+        assert "--quiet" not in flags
 
     def test_gemini_interactive_flags(self):
         flags = describe_provider_flags("gemini", mode="interactive")

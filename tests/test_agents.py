@@ -115,7 +115,7 @@ class TestWorkerCommandOneshot:
             log_path=log_path,
         )
         assert "--full-auto" in cmd
-        assert "--quiet" in cmd
+        assert "--quiet" not in cmd
         assert "'Fix bug'" in cmd or '"Fix bug"' in cmd
         assert "> " in cmd and "2>&1" in cmd
 

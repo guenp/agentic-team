@@ -14,7 +14,7 @@ from pathlib import Path
 from .models import PROVIDERS, get_provider
 
 
-READY_TIMEOUT_SECONDS = 20
+READY_TIMEOUT_SECONDS = 60
 
 
 def tmux_version() -> str | None:

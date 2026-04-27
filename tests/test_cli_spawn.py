@@ -98,6 +98,7 @@ class TestSpawnWorker:
         assert result.exit_code == 0
         workers = config.load_workers("demo")
         assert workers[0].provider == "claude"
+        assert fake_tmux.spawned_workers[0]["timeout"] == cli.READY_TIMEOUT_SECONDS
 
     def test_spawn_overrides_team_defaults(self, isolated_config):
         _setup_team(isolated_config, provider="claude")
@@ -105,6 +106,12 @@ class TestSpawnWorker:
         assert result.exit_code == 0
         workers = config.load_workers("demo")
         assert workers[0].provider == "codex"
+
+    def test_spawn_accepts_custom_timeout(self, isolated_config):
+        _setup_team(isolated_config)
+        result, fake_tmux = self._invoke_spawn(["--task", "fix bug", "--timeout", "90"])
+        assert result.exit_code == 0
+        assert fake_tmux.spawned_workers[0]["timeout"] == 90
 
     def test_spawn_rollback_on_failure(self, isolated_config):
         _setup_team(isolated_config)
