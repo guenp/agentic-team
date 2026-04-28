@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.0 (2026-04-28)
+
+### Features
+
+- **User defaults** ([#13](https://github.com/guenp/agentic-team/pull/13), [#22](https://github.com/guenp/agentic-team/pull/22)) — Add `~/.agentic-team/defaults.toml` support for default providers and per-provider model defaults.
+- **Team skill routing** — Add folder/project routing to the team skill and lead system prompt.
+- **Worktree behavior** — Make git worktree isolation opt-in instead of default.
+
+### Improvements
+
+- **Codex model support** ([#20](https://github.com/guenp/agentic-team/pull/20)) — Add `gpt-5.5` to Codex models and remove the unsupported `--quiet` flag.
+- **Worker startup timeout** ([#21](https://github.com/guenp/agentic-team/pull/21)) — Increase the interactive worker ready timeout and expose a per-worker timeout override.
+
+### Bug Fixes
+
+- **CLI version** — Fix `team --version` reporting stale package metadata.
+- **Worker cleanup** — Fix `team clear` missing workers that completed but still had stale status.
+
+### Documentation
+
+- Add development notes, a high-level architecture document, and a test plan.
+
 ## v0.3.0 (2026-04-15)
 
 ### Features
